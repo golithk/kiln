@@ -16,8 +16,9 @@ A polling-based daemon that monitors GitHub Project Kanban boards and orchestrat
 1. Create a new GitHub Project
 2. Delete all columns except Backlog
 3. Create these columns in order: Research, Plan, Implement, Validate, Done
+4. You should click "View" > "Fields" > check "Labels", then "Save View"
 
-Your project board should look like this:
+**Your project board should look like this:**
 
 <img width="640" alt="image" src="https://github.com/user-attachments/assets/04b6952f-7d0b-4ee8-9b94-e4bddfd66554" />
 
@@ -30,6 +31,7 @@ Your project board should look like this:
 | Implement | Executes plan, commits code, opens PR, iterates on review | implementing → reviewing → (Validate) |
 | Validate  | Nothing; Human review — merge PR when ready             | —                                       |
 | Done      | Worktree cleaned up automatically                       | cleaned_up                              |
+
 
 #### 🔥 Iterative Refinement via Comments
 
