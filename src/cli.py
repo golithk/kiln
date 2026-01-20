@@ -6,6 +6,7 @@ On subsequent runs, it loads the config and starts the daemon.
 """
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -62,6 +63,98 @@ BANNER_PLAIN = f"""
 def get_kiln_dir() -> Path:
     """Get the .kiln directory path in the current working directory."""
     return Path.cwd() / KILN_DIR
+
+
+def extract_claude_resources() -> Path:
+    """Extract bundled Claude resources to .kiln/ directory.
+
+    Copies commands, agents, and skills from the bundled .claude/ folder
+    (or repo root in development) to .kiln/commands, .kiln/agents, .kiln/skills.
+
+    This is called on every startup to ensure the latest resources are available.
+
+    Returns:
+        Path to the .kiln directory containing extracted resources
+    """
+    kiln_dir = get_kiln_dir()
+
+    # Source .claude from bundle or repo root
+    base_path = Path(sys._MEIPASS) if hasattr(sys, "_MEIPASS") else Path(__file__).parent.parent  # type: ignore[attr-defined]
+
+    source_claude = base_path / ".claude"
+
+    if not source_claude.exists():
+        return kiln_dir
+
+    # Extract each subdirectory (commands, agents, skills)
+    for subdir in ["commands", "agents", "skills"]:
+        src = source_claude / subdir
+        dest = kiln_dir / subdir
+
+        if not src.exists():
+            continue
+
+        # Remove existing and copy fresh
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
+    return kiln_dir
+
+
+def create_claude_symlinks() -> None:
+    """Create symlinks in ~/.claude/ pointing to .kiln/ resources.
+
+    Creates symlinks at ~/.claude/{commands,agents,skills}/kiln/ pointing to
+    the corresponding directories in .kiln/. This allows Claude Code to discover
+    kiln's resources via the global ~/.claude/ directory.
+
+    Existing symlinks are removed before creating new ones to ensure freshness.
+    Parent directories are created if needed.
+    """
+    kiln_dir = get_kiln_dir()
+    claude_home = Path.home() / ".claude"
+
+    for subdir in ["commands", "agents", "skills"]:
+        source = kiln_dir / subdir
+        if not source.exists():
+            continue
+
+        # Create parent directory if needed (e.g., ~/.claude/commands/)
+        link_parent = claude_home / subdir
+        link_parent.mkdir(parents=True, exist_ok=True)
+
+        # Create symlink at ~/.claude/{subdir}/kiln -> .kiln/{subdir}
+        link = link_parent / "kiln"
+
+        # Unlink existing symlink (if any) and create fresh
+        link.unlink(missing_ok=True)
+        link.symlink_to(source)
+
+
+def cleanup_claude_symlinks() -> None:
+    """Remove symlinks in ~/.claude/ that point to .kiln/ resources.
+
+    Removes symlinks at ~/.claude/{commands,agents,skills}/kiln/ that were
+    created by create_claude_symlinks(). This is called during daemon shutdown
+    to clean up kiln's footprint.
+
+    Errors are logged as warnings but do not cause crashes.
+    """
+    from src.logger import get_logger
+
+    logger = get_logger(__name__)
+    claude_home = Path.home() / ".claude"
+
+    for subdir in ["commands", "agents", "skills"]:
+        link = claude_home / subdir / "kiln"
+
+        try:
+            if link.is_symlink():
+                link.unlink()
+                logger.debug(f"Removed symlink {link}")
+        except Exception as e:
+            logger.warning(f"Failed to remove symlink {link}: {e}")
 
 
 def print_banner() -> None:
@@ -130,14 +223,26 @@ def run_daemon(daemon_mode: bool = False) -> None:
         print("  ✓ claude CLI found")
         print()
 
-        # Phase 2: Load and validate config
+        # Phase 2: Extract Claude resources to .kiln/
+        print("Extracting Claude resources...")
+        extract_claude_resources()
+        print("  ✓ Resources extracted to .kiln/")
+        print()
+
+        # Phase 2b: Create symlinks in ~/.claude/
+        print("Creating Claude symlinks...")
+        create_claude_symlinks()
+        print("  ✓ Symlinks created in ~/.claude/")
+        print()
+
+        # Phase 3: Load and validate config
         print("Loading configuration...")
         config = load_config()
         print("  ✓ PROJECT_URLS configured")
         print("  ✓ ALLOWED_USERNAMES configured")
         print()
 
-        # Phase 3: Validate project columns
+        # Phase 4: Validate project columns
         print("Validating project boards...")
 
         # Build tokens dict for client

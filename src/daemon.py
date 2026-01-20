@@ -458,6 +458,8 @@ class Daemon:
 
     def stop(self) -> None:
         """Stop the daemon gracefully."""
+        from src.cli import cleanup_claude_symlinks
+
         logger.debug("Stopping daemon")
         self._running = False
 
@@ -475,6 +477,13 @@ class Daemon:
             logger.debug("Database connection closed")
         except Exception as e:
             logger.error(f"Error closing database: {e}")
+
+        # Clean up Claude symlinks
+        try:
+            cleanup_claude_symlinks()
+            logger.debug("Claude symlinks cleaned up")
+        except Exception as e:
+            logger.warning(f"Error cleaning up Claude symlinks: {e}")
 
         logger.debug("Daemon stopped")
 
@@ -1407,48 +1416,10 @@ class Daemon:
         )
         self.runner.run(workflow, ctx, "Prepare")
 
-        # Copy .claude/ into the newly created worktree
-        worktree_path = self._get_worktree_path(item.repo, item.ticket_id)
-        self._copy_claude_to_worktree(worktree_path)
-
         if parent_branch:
             logger.info(f"Auto-prepared worktree (branching from parent branch '{parent_branch}')")
         else:
             logger.info("Auto-prepared worktree")
-
-    def _copy_claude_to_worktree(self, worktree_path: str) -> None:
-        """Copy .claude/ from bundled binary to a worktree.
-
-        This copies the entire .claude/ folder (commands, agents, skills)
-        directly into the worktree so Claude Code picks it up.
-
-        Args:
-            worktree_path: Path to the worktree directory
-        """
-        import shutil
-
-        # Source .claude from bundle or repo root
-        if hasattr(sys, "_MEIPASS"):
-            base_path = Path(sys._MEIPASS)  # type: ignore[attr-defined]
-        else:
-            base_path = Path(__file__).parent.parent  # repo root
-
-        source_claude = base_path / ".claude"
-        dest_claude = Path(worktree_path) / ".claude"
-
-        if not source_claude.exists():
-            logger.debug("No .claude/ in source, skipping copy")
-            return
-
-        try:
-            # Remove existing .claude/ and copy fresh
-            if dest_claude.exists():
-                shutil.rmtree(dest_claude)
-            shutil.copytree(source_claude, dest_claude)
-
-            logger.info(f"Copied .claude/ to {worktree_path}")
-        except Exception as e:
-            logger.warning(f"Failed to copy .claude/ to worktree: {e}")
 
     def _run_workflow(
         self,
@@ -1474,9 +1445,6 @@ class Daemon:
 
         # Determine workspace path based on workflow
         workspace_path = self._get_worktree_path(item.repo, item.ticket_id)
-
-        # Copy .claude/ to ensure worktree has latest commands/skills/agents
-        self._copy_claude_to_worktree(workspace_path)
 
         # Rebase on first Research run (no research_ready label yet) - use cached labels
         if workflow_name == "Research":
