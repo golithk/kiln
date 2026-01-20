@@ -123,7 +123,11 @@ class GitHubTicketClient:
             env = {}
             token = self._get_token_for_host(hostname)
             if token:
-                env["GITHUB_TOKEN"] = token
+                # gh CLI uses different env vars for github.com vs GHES
+                if hostname == "github.com":
+                    env["GITHUB_TOKEN"] = token
+                else:
+                    env["GH_ENTERPRISE_TOKEN"] = token
 
             import os
 
@@ -1857,7 +1861,11 @@ class GitHubTicketClient:
             env = {}
             token = self._get_token_for_host(hostname)
             if token:
-                env["GITHUB_TOKEN"] = token
+                # gh CLI uses different env vars for github.com vs GHES
+                if hostname == "github.com":
+                    env["GITHUB_TOKEN"] = token
+                else:
+                    env["GH_ENTERPRISE_TOKEN"] = token
 
             result = subprocess.run(
                 cmd,
