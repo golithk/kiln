@@ -37,6 +37,11 @@ class GitHubTicketClient:
         return True
 
     @property
+    def supports_status_actor_check(self) -> bool:
+        """github.com supports project timeline events for status change verification."""
+        return True
+
+    @property
     def client_description(self) -> str:
         """Human-readable description of this client."""
         return "GitHub.com"
