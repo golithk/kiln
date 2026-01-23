@@ -108,3 +108,4 @@ REQUIRED_LABELS: dict[str, LabelConfig] = {
         "color": "D93F0B",  # Red/orange for failure
     },
 }
+

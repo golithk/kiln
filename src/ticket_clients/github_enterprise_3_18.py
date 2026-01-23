@@ -151,12 +151,10 @@ class GitHubEnterprise318Client(GitHubEnterprise314Client):
             children = []
             for child in sub_issues:
                 if child:
-                    children.append(
-                        {
-                            "number": child["number"],
-                            "state": child["state"],
-                        }
-                    )
+                    children.append({
+                        "number": child["number"],
+                        "state": child["state"],
+                    })
 
             logger.debug(f"Found {len(children)} child issues for {repo}#{ticket_id}")
             return children

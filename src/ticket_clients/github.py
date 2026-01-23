@@ -433,12 +433,15 @@ class GitHubTicketClient:
         )
         logger.info(f"Updated Status field options for field {field_id}")
 
-    def update_item_status(self, item_id: str, new_status: str) -> None:
+    def update_item_status(
+        self, item_id: str, new_status: str, *, hostname: str = "github.com"
+    ) -> None:
         """Update the status of a project item.
 
         Args:
             item_id: The ID of the project item to update
             new_status: The new status value to set
+            hostname: GitHub hostname (unused, for signature compatibility)
         """
         logger.info(f"Updating project item {item_id} to status: {new_status}")
 
@@ -514,12 +517,15 @@ class GitHubTicketClient:
 
         logger.info(f"Successfully updated project item {item_id} to '{new_status}'")
 
-    def archive_item(self, board_id: str, item_id: str) -> bool:
+    def archive_item(
+        self, board_id: str, item_id: str, *, hostname: str = "github.com"
+    ) -> bool:
         """Archive a project item.
 
         Args:
             board_id: The project's node ID
             item_id: The project item's node ID
+            hostname: GitHub hostname (unused, for signature compatibility)
 
         Returns:
             True if archived successfully, False otherwise
@@ -1363,12 +1369,10 @@ class GitHubTicketClient:
             children = []
             for child in sub_issues:
                 if child:
-                    children.append(
-                        {
-                            "number": child["number"],
-                            "state": child["state"],
-                        }
-                    )
+                    children.append({
+                        "number": child["number"],
+                        "state": child["state"],
+                    })
 
             logger.debug(f"Found {len(children)} child issues for {repo}#{ticket_id}")
             return children

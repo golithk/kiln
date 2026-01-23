@@ -63,7 +63,8 @@ def check_actor_allowed(
 
     if actor is None:
         logger.warning(
-            f"{prefix}BLOCKED - Could not determine actor for {context_key}. Skipping for security."
+            f"{prefix}BLOCKED - Could not determine actor for {context_key}. "
+            "Skipping for security."
         )
         return ActorCategory.UNKNOWN
 
@@ -73,7 +74,8 @@ def check_actor_allowed(
 
     if actor in team_usernames:
         logger.debug(
-            f"{prefix}Action by team member ('{actor}') for {context_key}. Observing silently."
+            f"{prefix}Action by team member ('{actor}') for {context_key}. "
+            "Observing silently."
         )
         return ActorCategory.TEAM
 

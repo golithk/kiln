@@ -254,9 +254,7 @@ class TestInstallClaudeResources:
         (kiln_dir / "agents").mkdir(parents=True)
         (kiln_dir / "agents" / "kiln-codebase-analyzer.md").write_text("# Test agent")
         (kiln_dir / "skills" / "kiln-edit-github-issue-components").mkdir(parents=True)
-        (kiln_dir / "skills" / "kiln-edit-github-issue-components" / "SKILL.md").write_text(
-            "# Test skill"
-        )
+        (kiln_dir / "skills" / "kiln-edit-github-issue-components" / "SKILL.md").write_text("# Test skill")
 
         # Create fake home directory
         fake_home = tmp_path / "fake_home"
