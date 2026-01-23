@@ -9,13 +9,16 @@ Tests for CommentProcessor methods including:
 - process() method
 """
 
+import tempfile
 from datetime import UTC
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from src.daemon import Daemon
 from src.interfaces import Comment, TicketItem
+from src.labels import Labels
 
 
 # ============================================================================
