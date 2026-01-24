@@ -24,6 +24,7 @@ from src.claude_runner import run_claude
 from src.comment_processor import CommentProcessor
 from src.config import Config, load_config
 from src.database import Database, ProjectMetadata, RunRecord
+from src.frontmatter import parse_issue_frontmatter
 from src.interfaces import TicketItem
 from src.labels import REQUIRED_LABELS, Labels
 from src.logger import (
@@ -1839,10 +1840,20 @@ class Daemon:
         # Pre-fetch issue body for PrepareWorkflow
         issue_body = self.ticket_client.get_ticket_body(item.repo, item.ticket_id)
 
-        # Check for parent issue with open PR
-        parent_issue_number, parent_branch = self._get_parent_pr_info(
-            item.repo, item.ticket_id
-        )
+        # Parse frontmatter for explicit feature_branch setting
+        frontmatter = parse_issue_frontmatter(issue_body)
+        feature_branch = frontmatter.get("feature_branch")
+
+        # Explicit feature_branch takes precedence over parent detection
+        if feature_branch:
+            logger.info(f"Using explicit feature_branch '{feature_branch}' from issue frontmatter")
+            parent_issue_number = None
+            parent_branch = feature_branch
+        else:
+            # Check for parent issue with open PR
+            parent_issue_number, parent_branch = self._get_parent_pr_info(
+                item.repo, item.ticket_id
+            )
 
         workflow = PrepareWorkflow()
         # Use absolute path so Claude knows exactly where to create things
@@ -1910,6 +1921,25 @@ class Daemon:
         resume_session = None
         logger.info(f"Starting fresh {workflow_name} session")
 
+        # Resolve parent_branch for workflows that need it (e.g., Implement for PR --base flag)
+        parent_branch: str | None = None
+        parent_issue_number: int | None = None
+        if workflow_name == "Implement":
+            # Pre-fetch issue body and parse frontmatter
+            issue_body = self.ticket_client.get_ticket_body(item.repo, item.ticket_id)
+            frontmatter = parse_issue_frontmatter(issue_body)
+            feature_branch = frontmatter.get("feature_branch")
+
+            # Explicit feature_branch takes precedence over parent detection
+            if feature_branch:
+                logger.info(f"Using explicit feature_branch '{feature_branch}' from issue frontmatter")
+                parent_branch = feature_branch
+            else:
+                # Check for parent issue with open PR
+                parent_issue_number, parent_branch = self._get_parent_pr_info(
+                    item.repo, item.ticket_id
+                )
+
         # Create context
         ctx = WorkflowContext(
             repo=item.repo,
@@ -1918,6 +1948,8 @@ class Daemon:
             workspace_path=workspace_path,
             project_url=item.board_url,
             username_self=self.config.username_self,
+            parent_issue_number=parent_issue_number,
+            parent_branch=parent_branch,
         )
 
         # Run workflow

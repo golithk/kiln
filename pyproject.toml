@@ -25,6 +25,7 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
     "tenacity>=8.2.0",
     "requests>=2.31.0",
+    "pyyaml>=6.0.0",
 ]
 
 [project.scripts]
@@ -39,6 +40,7 @@ dev = [
     "pyinstaller>=6.0.0",
     "mypy>=1.8.0",
     "types-requests>=2.31.0",
+    "types-PyYAML>=6.0.0",
     "mutmut>=3.0.0",
 ]
 
