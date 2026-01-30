@@ -37,7 +37,7 @@ def init_slack(bot_token: str | None, user_id: str | None) -> None:
         return
 
     if not bot_token or not user_id:
-        logger.debug("Slack not configured (missing bot token or user ID)")
+        logger.info("Slack not configured (missing bot token or user ID)")
         return
 
     _bot_token = bot_token
@@ -103,6 +103,53 @@ def send_phase_completion_notification(
         return True
     except requests.RequestException as e:
         logger.warning(f"Failed to send Slack notification: {e}")
+        return False
+
+
+def send_startup_ping() -> bool:
+    """Send a startup notification DM to the configured Slack user.
+
+    Sends a "kiln is firing" message to indicate the daemon has started
+    and Slack integration is working.
+
+    Returns:
+        True if notification was sent successfully, False otherwise.
+        Returns False without error if Slack is not initialized.
+    """
+    if not _initialized or not _bot_token or not _user_id:
+        return False
+
+    message = "🔥 your kiln is firing"
+
+    payload = {
+        "channel": _user_id,
+        "text": message,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {_bot_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            SLACK_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        response_data = response.json()
+        if not response_data.get("ok"):
+            error = response_data.get("error", "unknown error")
+            logger.warning(f"Slack API error sending startup ping: {error}")
+            return False
+
+        logger.info("Slack startup ping sent")
+        return True
+    except requests.RequestException as e:
+        logger.warning(f"Failed to send Slack startup ping: {e}")
         return False
 
 
