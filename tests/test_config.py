@@ -129,24 +129,28 @@ class TestLoadConfig:
         assert config.username_self == "testuser"
 
     def test_load_config_missing_github_token(self, monkeypatch):
-        """Test load_config accepts missing GITHUB_TOKEN."""
+        """Test load_config requires GITHUB_TOKEN when no GHES config."""
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_HOST", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_VERSION", raising=False)
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "testuser")
 
-        config = load_config_from_env()
-
-        assert config.github_token is None
+        with pytest.raises(ValueError, match="Missing required environment variables: GITHUB_TOKEN"):
+            load_config_from_env()
 
     def test_load_config_empty_github_token(self, monkeypatch):
-        """Test load_config normalizes empty GITHUB_TOKEN to None."""
+        """Test load_config treats empty GITHUB_TOKEN as missing."""
         monkeypatch.setenv("GITHUB_TOKEN", "")
+        monkeypatch.delenv("GITHUB_ENTERPRISE_HOST", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_VERSION", raising=False)
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "testuser")
 
-        config = load_config_from_env()
-
-        assert config.github_token is None
+        with pytest.raises(ValueError, match="Missing required environment variables: GITHUB_TOKEN"):
+            load_config_from_env()
 
     def test_load_config_watched_statuses_with_spaces(self, monkeypatch):
         """Test watched_statuses parsing handles spaces correctly."""
@@ -199,9 +203,50 @@ class TestLoadConfig:
     def test_load_config_missing_project_urls(self, monkeypatch):
         """Test load_config raises ValueError when PROJECT_URLS is missing."""
         monkeypatch.setenv("GITHUB_TOKEN", "test_token")
+        monkeypatch.setenv("USERNAME_SELF", "testuser")
         monkeypatch.delenv("PROJECT_URLS", raising=False)
 
-        with pytest.raises(ValueError, match="PROJECT_URLS environment variable is required"):
+        with pytest.raises(ValueError, match="Missing required environment variables: PROJECT_URLS"):
+            load_config_from_env()
+
+    def test_load_config_missing_multiple_required_vars(self, monkeypatch):
+        """Test load_config lists all missing required vars in a single error."""
+        monkeypatch.setenv("GITHUB_TOKEN", "test_token")
+        monkeypatch.delenv("PROJECT_URLS", raising=False)
+        monkeypatch.delenv("USERNAME_SELF", raising=False)
+
+        with pytest.raises(
+            ValueError, match="Missing required environment variables: PROJECT_URLS, USERNAME_SELF"
+        ):
+            load_config_from_env()
+
+    def test_load_config_missing_github_token_no_auth(self, monkeypatch):
+        """Test load_config raises ValueError when no GitHub auth is configured."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_HOST", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_VERSION", raising=False)
+        monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
+        monkeypatch.setenv("USERNAME_SELF", "testuser")
+
+        with pytest.raises(
+            ValueError, match="Missing required environment variables: GITHUB_TOKEN"
+        ):
+            load_config_from_env()
+
+    def test_load_config_missing_all_required_vars(self, monkeypatch):
+        """Test load_config lists all missing vars including GITHUB_TOKEN."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_HOST", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_ENTERPRISE_VERSION", raising=False)
+        monkeypatch.delenv("PROJECT_URLS", raising=False)
+        monkeypatch.delenv("USERNAME_SELF", raising=False)
+
+        with pytest.raises(
+            ValueError,
+            match="Missing required environment variables: GITHUB_TOKEN, PROJECT_URLS, USERNAME_SELF",
+        ):
             load_config_from_env()
 
     def test_load_config_project_urls_comma_separated(self, monkeypatch):
@@ -365,7 +410,7 @@ class TestLoadConfig:
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.delenv("USERNAME_SELF", raising=False)
 
-        with pytest.raises(ValueError, match="USERNAME_SELF environment variable is required"):
+        with pytest.raises(ValueError, match="Missing required environment variables: USERNAME_SELF"):
             load_config_from_env()
 
     def test_load_config_empty_username_self(self, monkeypatch):
@@ -374,7 +419,7 @@ class TestLoadConfig:
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "")
 
-        with pytest.raises(ValueError, match="USERNAME_SELF environment variable is required"):
+        with pytest.raises(ValueError, match="Missing required environment variables: USERNAME_SELF"):
             load_config_from_env()
 
     def test_load_config_username_self_whitespace_only(self, monkeypatch):
@@ -383,7 +428,7 @@ class TestLoadConfig:
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "   ")
 
-        with pytest.raises(ValueError, match="USERNAME_SELF environment variable is required"):
+        with pytest.raises(ValueError, match="Missing required environment variables: USERNAME_SELF"):
             load_config_from_env()
 
     def test_load_config_username_self(self, monkeypatch):
@@ -533,7 +578,7 @@ class TestLoadConfigFromFile:
         config_file = tmp_path / "config"
         config_file.write_text("GITHUB_TOKEN=ghp_test\nUSERNAME_SELF=testuser")
 
-        with pytest.raises(ValueError, match="PROJECT_URLS is required"):
+        with pytest.raises(ValueError, match="Missing required configuration in .kiln/config: PROJECT_URLS"):
             load_config_from_file(config_file)
 
     def test_load_config_from_file_parses_username_self(self, tmp_path, monkeypatch):
@@ -557,7 +602,41 @@ class TestLoadConfigFromFile:
             "GITHUB_TOKEN=ghp_test\nPROJECT_URLS=https://github.com/orgs/test/projects/1"
         )
 
-        with pytest.raises(ValueError, match="USERNAME_SELF is required"):
+        with pytest.raises(ValueError, match="Missing required configuration in .kiln/config: USERNAME_SELF"):
+            load_config_from_file(config_file)
+
+    def test_load_config_from_file_raises_on_missing_multiple_vars(self, tmp_path):
+        """Test ValueError lists all missing required vars in config file."""
+        config_file = tmp_path / "config"
+        config_file.write_text("GITHUB_TOKEN=ghp_test")
+
+        with pytest.raises(
+            ValueError, match="Missing required configuration in .kiln/config: PROJECT_URLS, USERNAME_SELF"
+        ):
+            load_config_from_file(config_file)
+
+    def test_load_config_from_file_raises_on_missing_github_token(self, tmp_path):
+        """Test ValueError when no GitHub auth is configured in file."""
+        config_file = tmp_path / "config"
+        config_file.write_text(
+            "PROJECT_URLS=https://github.com/orgs/test/projects/1\n"
+            "USERNAME_SELF=testuser"
+        )
+
+        with pytest.raises(
+            ValueError, match="Missing required configuration in .kiln/config: GITHUB_TOKEN"
+        ):
+            load_config_from_file(config_file)
+
+    def test_load_config_from_file_raises_on_missing_all_vars(self, tmp_path):
+        """Test ValueError lists all missing vars including GITHUB_TOKEN in file."""
+        config_file = tmp_path / "config"
+        config_file.write_text("# empty config")
+
+        with pytest.raises(
+            ValueError,
+            match="Missing required configuration in .kiln/config: GITHUB_TOKEN, PROJECT_URLS, USERNAME_SELF",
+        ):
             load_config_from_file(config_file)
 
     def test_load_config_from_file_parses_poll_interval(self, tmp_path, monkeypatch):
@@ -807,6 +886,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.mycompany.com\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_enterprise_test\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.mycompany.com/orgs/test/projects/1\n"
             "USERNAME_SELF=testuser",
         )
@@ -816,6 +896,7 @@ class TestGHESConfiguration:
 
         assert config.github_enterprise_host == "github.mycompany.com"
         assert config.github_enterprise_token == "ghp_enterprise_test"
+        assert config.github_enterprise_version == "3.14"
         assert config.github_token is None
 
     def test_ghes_config_parsed_from_env(self, monkeypatch):
@@ -823,6 +904,7 @@ class TestGHESConfiguration:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_ENTERPRISE_HOST", "github.enterprise.io")
         monkeypatch.setenv("GITHUB_ENTERPRISE_TOKEN", "ghp_ent_token")
+        monkeypatch.setenv("GITHUB_ENTERPRISE_VERSION", "3.14")
         monkeypatch.setenv("PROJECT_URLS", "https://github.enterprise.io/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "testuser")
 
@@ -830,6 +912,7 @@ class TestGHESConfiguration:
 
         assert config.github_enterprise_host == "github.enterprise.io"
         assert config.github_enterprise_token == "ghp_ent_token"
+        assert config.github_enterprise_version == "3.14"
         assert config.github_token is None
 
     def test_mutual_exclusivity_raises_error_file(self, tmp_path):
@@ -874,7 +957,7 @@ class TestGHESConfiguration:
 
         with pytest.raises(
             ValueError,
-            match="GITHUB_ENTERPRISE_TOKEN requires GITHUB_ENTERPRISE_HOST",
+            match="Missing required configuration in .kiln/config: GITHUB_ENTERPRISE_HOST, GITHUB_ENTERPRISE_VERSION",
         ):
             load_config_from_file(config_file)
 
@@ -888,7 +971,7 @@ class TestGHESConfiguration:
 
         with pytest.raises(
             ValueError,
-            match="GITHUB_ENTERPRISE_TOKEN requires GITHUB_ENTERPRISE_HOST",
+            match="Missing required environment variables: GITHUB_ENTERPRISE_HOST, GITHUB_ENTERPRISE_VERSION",
         ):
             load_config_from_env()
 
@@ -898,6 +981,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.mycompany.com\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_enterprise\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.com/orgs/test/projects/1\n"
             "USERNAME_SELF=testuser",
         )
@@ -913,6 +997,7 @@ class TestGHESConfiguration:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_ENTERPRISE_HOST", "github.mycompany.com")
         monkeypatch.setenv("GITHUB_ENTERPRISE_TOKEN", "ghp_enterprise")
+        monkeypatch.setenv("GITHUB_ENTERPRISE_VERSION", "3.14")
         monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
         monkeypatch.setenv("USERNAME_SELF", "testuser")
 
@@ -944,6 +1029,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.enterprise.io\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_ent_only\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.enterprise.io/orgs/myorg/projects/5\n"
             "USERNAME_SELF=enterpriseuser",
         )
@@ -954,6 +1040,7 @@ class TestGHESConfiguration:
         assert config.github_token is None
         assert config.github_enterprise_host == "github.enterprise.io"
         assert config.github_enterprise_token == "ghp_ent_only"
+        assert config.github_enterprise_version == "3.14"
         assert config.project_urls == ["https://github.enterprise.io/orgs/myorg/projects/5"]
         assert config.username_self == "enterpriseuser"
 
@@ -962,6 +1049,7 @@ class TestGHESConfiguration:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_ENTERPRISE_HOST", "git.corp.com")
         monkeypatch.setenv("GITHUB_ENTERPRISE_TOKEN", "ghp_corp_token")
+        monkeypatch.setenv("GITHUB_ENTERPRISE_VERSION", "3.14")
         monkeypatch.setenv("PROJECT_URLS", "https://git.corp.com/orgs/team/projects/3")
         monkeypatch.setenv("USERNAME_SELF", "corpuser")
 
@@ -970,6 +1058,7 @@ class TestGHESConfiguration:
         assert config.github_token is None
         assert config.github_enterprise_host == "git.corp.com"
         assert config.github_enterprise_token == "ghp_corp_token"
+        assert config.github_enterprise_version == "3.14"
         assert config.project_urls == ["https://git.corp.com/orgs/team/projects/3"]
 
     def test_empty_ghes_values_normalized_to_none_file(self, tmp_path, monkeypatch):
@@ -1012,6 +1101,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.mycompany.com\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_ent_env_test\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.mycompany.com/orgs/test/projects/1\n"
             "USERNAME_SELF=testuser",
         )
@@ -1028,6 +1118,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.mycompany.com\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_enterprise\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.mycompany.com/orgs/team1/projects/1,"
             "https://github.mycompany.com/orgs/team2/projects/2\n"
             "USERNAME_SELF=testuser",
@@ -1047,6 +1138,7 @@ class TestGHESConfiguration:
             tmp_path,
             "GITHUB_ENTERPRISE_HOST=github.mycompany.com\n"
             "GITHUB_ENTERPRISE_TOKEN=ghp_enterprise\n"
+            "GITHUB_ENTERPRISE_VERSION=3.14\n"
             "PROJECT_URLS=https://github.mycompany.com/orgs/team1/projects/1,"
             "https://github.com/orgs/team2/projects/2\n"
             "USERNAME_SELF=testuser",
@@ -1236,7 +1328,7 @@ class TestBackwardIncompatibility:
         monkeypatch.setenv("ALLOWED_USERNAME", "olduser")  # Old config option
         monkeypatch.delenv("USERNAME_SELF", raising=False)
 
-        with pytest.raises(ValueError, match="USERNAME_SELF environment variable is required"):
+        with pytest.raises(ValueError, match="Missing required environment variables: USERNAME_SELF"):
             load_config_from_env()
 
     def test_allowed_username_not_accepted_file(self, tmp_path, monkeypatch):
@@ -1253,7 +1345,7 @@ class TestBackwardIncompatibility:
         )
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
 
-        with pytest.raises(ValueError, match="USERNAME_SELF is required"):
+        with pytest.raises(ValueError, match="Missing required configuration in .kiln/config: USERNAME_SELF"):
             load_config_from_file(config_file)
 
     def test_allowed_username_ignored_when_username_self_present(self, monkeypatch):

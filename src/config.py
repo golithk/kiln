@@ -152,6 +152,9 @@ def load_config_from_file(config_path: Path) -> Config:
     """
     data = parse_config_file(config_path)
 
+    # Collect all missing required vars
+    missing_vars: list[str] = []
+
     # Parse GitHub token
     github_token = data.get("GITHUB_TOKEN")
     if not github_token:
@@ -173,24 +176,26 @@ def load_config_from_file(config_path: Path) -> Config:
             "Kiln operates against either github.com OR a GitHub Enterprise Server, not both."
         )
 
-    # Validate GHES token requires GHES host
-    if github_enterprise_token and not github_enterprise_host:
-        raise ValueError(
-            "GITHUB_ENTERPRISE_TOKEN requires GITHUB_ENTERPRISE_HOST. "
-            "Please set the hostname of your GitHub Enterprise Server."
-        )
-
     # Parse GHES version (e.g., "3.14")
     github_enterprise_version = data.get("GITHUB_ENTERPRISE_VERSION")
     if not github_enterprise_version:
         github_enterprise_version = None
 
-    # Validate GHES version requires GHES host and token
-    if github_enterprise_version and not (github_enterprise_host and github_enterprise_token):
-        raise ValueError(
-            "GITHUB_ENTERPRISE_VERSION requires GITHUB_ENTERPRISE_HOST and GITHUB_ENTERPRISE_TOKEN. "
-            "Please configure all GitHub Enterprise Server settings."
-        )
+    # Validate GitHub authentication - need either GITHUB_TOKEN or full GHES config
+    if not github_token:
+        # No github.com token - check GHES configuration
+        has_any_ghes = github_enterprise_host or github_enterprise_token or github_enterprise_version
+        if has_any_ghes:
+            # Attempting GHES - need all three vars
+            if not github_enterprise_host:
+                missing_vars.append("GITHUB_ENTERPRISE_HOST")
+            if not github_enterprise_token:
+                missing_vars.append("GITHUB_ENTERPRISE_TOKEN")
+            if not github_enterprise_version:
+                missing_vars.append("GITHUB_ENTERPRISE_VERSION")
+        else:
+            # No auth configured at all
+            missing_vars.append("GITHUB_TOKEN")
 
     # Set tokens in environment so Claude subprocesses can use gh CLI
     if github_token:
@@ -200,22 +205,28 @@ def load_config_from_file(config_path: Path) -> Config:
         # gh CLI uses GH_ENTERPRISE_TOKEN for GHES authentication
         os.environ["GH_ENTERPRISE_TOKEN"] = github_enterprise_token
 
-    # Parse required fields
+    # Parse required fields - collect all missing vars before raising
     project_urls_str = data.get("PROJECT_URLS", "")
     if not project_urls_str:
-        raise ValueError("PROJECT_URLS is required in .kiln/config")
+        missing_vars.append("PROJECT_URLS")
     project_urls = [url.strip() for url in project_urls_str.split(",") if url.strip()]
-    if not project_urls:
-        raise ValueError("At least one project URL must be provided")
+    if project_urls_str and not project_urls:
+        missing_vars.append("PROJECT_URLS")  # Present but empty after parsing
+
+    username_self = data.get("USERNAME_SELF", "").strip()
+    if not username_self:
+        missing_vars.append("USERNAME_SELF")
+
+    # Raise error listing all missing required vars
+    if missing_vars:
+        raise ValueError(
+            f"Missing required configuration in .kiln/config: {', '.join(missing_vars)}"
+        )
 
     # Validate PROJECT_URLS hostnames match the configured GitHub host
     _validate_project_urls_host(
         project_urls, github_token, github_enterprise_host, github_enterprise_token
     )
-
-    username_self = data.get("USERNAME_SELF", "").strip()
-    if not username_self:
-        raise ValueError("USERNAME_SELF is required in .kiln/config")
 
     # Parse team usernames as comma-separated list (optional)
     team_usernames_str = data.get("USERNAMES_TEAM", "")
@@ -350,8 +361,11 @@ def load_config_from_env() -> Config:
         Config: A Config instance populated from environment variables
 
     Raises:
-        ValueError: If required environment variables (PROJECT_URLS) are missing
+        ValueError: If required environment variables are missing
     """
+    # Collect all missing required vars
+    missing_vars: list[str] = []
+
     github_token = os.environ.get("GITHUB_TOKEN")
     # Normalize empty string to None so gh CLI can use gh auth login credentials
     if not github_token:
@@ -373,24 +387,26 @@ def load_config_from_env() -> Config:
             "Kiln operates against either github.com OR a GitHub Enterprise Server, not both."
         )
 
-    # Validate GHES token requires GHES host
-    if github_enterprise_token and not github_enterprise_host:
-        raise ValueError(
-            "GITHUB_ENTERPRISE_TOKEN requires GITHUB_ENTERPRISE_HOST. "
-            "Please set the hostname of your GitHub Enterprise Server."
-        )
-
     # Parse GHES version (e.g., "3.14")
     github_enterprise_version = os.environ.get("GITHUB_ENTERPRISE_VERSION")
     if not github_enterprise_version:
         github_enterprise_version = None
 
-    # Validate GHES version requires GHES host and token
-    if github_enterprise_version and not (github_enterprise_host and github_enterprise_token):
-        raise ValueError(
-            "GITHUB_ENTERPRISE_VERSION requires GITHUB_ENTERPRISE_HOST and GITHUB_ENTERPRISE_TOKEN. "
-            "Please configure all GitHub Enterprise Server settings."
-        )
+    # Validate GitHub authentication - need either GITHUB_TOKEN or full GHES config
+    if not github_token:
+        # No github.com token - check GHES configuration
+        has_any_ghes = github_enterprise_host or github_enterprise_token or github_enterprise_version
+        if has_any_ghes:
+            # Attempting GHES - need all three vars
+            if not github_enterprise_host:
+                missing_vars.append("GITHUB_ENTERPRISE_HOST")
+            if not github_enterprise_token:
+                missing_vars.append("GITHUB_ENTERPRISE_TOKEN")
+            if not github_enterprise_version:
+                missing_vars.append("GITHUB_ENTERPRISE_VERSION")
+        else:
+            # No auth configured at all
+            missing_vars.append("GITHUB_TOKEN")
 
     # Set tokens in environment so Claude subprocesses can use gh CLI
     if github_token:
@@ -400,14 +416,26 @@ def load_config_from_env() -> Config:
         # gh CLI uses GH_ENTERPRISE_TOKEN for GHES authentication
         os.environ["GH_ENTERPRISE_TOKEN"] = github_enterprise_token
 
-    # PROJECT_URLS: comma-separated list of project URLs
+    # PROJECT_URLS: comma-separated list of project URLs - collect missing before raising
     project_urls_env = os.environ.get("PROJECT_URLS")
     if not project_urls_env:
-        raise ValueError("PROJECT_URLS environment variable is required")
+        missing_vars.append("PROJECT_URLS")
+        project_urls = []
+    else:
+        project_urls = [url.strip() for url in project_urls_env.split(",") if url.strip()]
+        if not project_urls:
+            missing_vars.append("PROJECT_URLS")  # Present but empty after parsing
 
-    project_urls = [url.strip() for url in project_urls_env.split(",") if url.strip()]
-    if not project_urls:
-        raise ValueError("At least one project URL must be provided")
+    # Parse USERNAME_SELF (required) - collect missing before raising
+    username_self = os.environ.get("USERNAME_SELF", "").strip()
+    if not username_self:
+        missing_vars.append("USERNAME_SELF")
+
+    # Raise error listing all missing required vars
+    if missing_vars:
+        raise ValueError(
+            f"Missing required environment variables: {', '.join(missing_vars)}"
+        )
 
     # Validate PROJECT_URLS hostnames match the configured GitHub host
     _validate_project_urls_host(
@@ -428,11 +456,6 @@ def load_config_from_env() -> Config:
         watched_statuses = ["Research", "Plan", "Implement"]
 
     max_concurrent_workflows = int(os.environ.get("MAX_CONCURRENT_WORKFLOWS", "3"))
-
-    # Parse USERNAME_SELF (required)
-    username_self = os.environ.get("USERNAME_SELF", "").strip()
-    if not username_self:
-        raise ValueError("USERNAME_SELF environment variable is required")
 
     # Parse USERNAMES_TEAM as comma-separated list (optional)
     team_usernames_str = os.environ.get("USERNAMES_TEAM", "")
