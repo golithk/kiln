@@ -11,7 +11,7 @@ from tenacity import wait_exponential
 
 from src.claude_runner import run_claude
 from src.logger import get_logger, log_message
-from src.slack import (
+from src.integrations.slack import (
     send_implementation_beginning_notification,
     send_ready_for_validation_notification,
 )

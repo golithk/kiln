@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src import slack
+from src.integrations import slack
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() returns True on success."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -67,7 +67,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() handles Slack API error response gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
@@ -81,7 +81,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() handles timeout gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.Timeout("Connection timed out")
 
             result = slack.send_startup_ping()
@@ -92,7 +92,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() handles connection error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.ConnectionError("Connection refused")
 
             result = slack.send_startup_ping()
@@ -103,7 +103,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() handles 4xx HTTP errors gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status.side_effect = requests.HTTPError(
                 "400 Bad Request"
@@ -118,7 +118,7 @@ class TestSendStartupPing:
         """Test send_startup_ping() handles 5xx HTTP errors gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status.side_effect = requests.HTTPError(
                 "500 Internal Server Error"
@@ -148,7 +148,7 @@ class TestSendCommentProcessedNotification:
         """Test send_comment_processed_notification() returns True on success."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -182,7 +182,7 @@ class TestSendCommentProcessedNotification:
         """Test send_comment_processed_notification() handles Slack API error response gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
@@ -200,7 +200,7 @@ class TestSendCommentProcessedNotification:
         """Test send_comment_processed_notification() handles timeout gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.Timeout("Connection timed out")
 
             result = slack.send_comment_processed_notification(
@@ -215,7 +215,7 @@ class TestSendCommentProcessedNotification:
         """Test send_comment_processed_notification() handles connection error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.ConnectionError("Connection refused")
 
             result = slack.send_comment_processed_notification(
@@ -244,7 +244,7 @@ class TestSendImplementationBeginningNotification:
         """Test send_implementation_beginning_notification() returns True on success."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -277,7 +277,7 @@ class TestSendImplementationBeginningNotification:
         """Test send_implementation_beginning_notification() handles Slack API error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
@@ -294,7 +294,7 @@ class TestSendImplementationBeginningNotification:
         """Test send_implementation_beginning_notification() handles timeout gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.Timeout("Connection timed out")
 
             result = slack.send_implementation_beginning_notification(
@@ -308,7 +308,7 @@ class TestSendImplementationBeginningNotification:
         """Test send_implementation_beginning_notification() handles connection error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.ConnectionError("Connection refused")
 
             result = slack.send_implementation_beginning_notification(
@@ -336,7 +336,7 @@ class TestSendReadyForValidationNotification:
         """Test send_ready_for_validation_notification() returns True on success."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -369,7 +369,7 @@ class TestSendReadyForValidationNotification:
         """Test send_ready_for_validation_notification() handles Slack API error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
@@ -386,7 +386,7 @@ class TestSendReadyForValidationNotification:
         """Test send_ready_for_validation_notification() handles timeout gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.Timeout("Connection timed out")
 
             result = slack.send_ready_for_validation_notification(
@@ -400,7 +400,7 @@ class TestSendReadyForValidationNotification:
         """Test send_ready_for_validation_notification() handles connection error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.ConnectionError("Connection refused")
 
             result = slack.send_ready_for_validation_notification(
@@ -456,7 +456,7 @@ class TestSendPhaseCompletionNotification:
         """Test send_phase_completion_notification() returns True for Research phase."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -482,7 +482,7 @@ class TestSendPhaseCompletionNotification:
         """Test send_phase_completion_notification() returns True for Plan phase."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": True}
@@ -508,7 +508,7 @@ class TestSendPhaseCompletionNotification:
         """Test send_phase_completion_notification() handles Slack API error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_response = MagicMock()
             mock_response.raise_for_status = MagicMock()
             mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
@@ -527,7 +527,7 @@ class TestSendPhaseCompletionNotification:
         """Test send_phase_completion_notification() handles timeout gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.Timeout("Connection timed out")
 
             result = slack.send_phase_completion_notification(
@@ -543,7 +543,7 @@ class TestSendPhaseCompletionNotification:
         """Test send_phase_completion_notification() handles connection error gracefully."""
         slack.init_slack("xoxb-test-token", "U12345")
 
-        with patch("src.slack.requests.post") as mock_post:
+        with patch("src.integrations.slack.requests.post") as mock_post:
             mock_post.side_effect = requests.ConnectionError("Connection refused")
 
             result = slack.send_phase_completion_notification(
