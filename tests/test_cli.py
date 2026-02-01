@@ -451,3 +451,71 @@ class TestCmdRun:
         # Error should include recommendation
         assert "mkdir" in captured.err
         assert "kiln-workspace" in captured.err
+
+
+@pytest.mark.unit
+class TestRunDaemonSlackInitialization:
+    """Tests to verify run_daemon() initializes Slack correctly.
+
+    These tests prevent regression of the bug where cli.py's run_daemon()
+    was missing Slack initialization, while daemon.py's main() had it.
+
+    These tests use source code inspection to verify Slack initialization
+    is present in run_daemon(), avoiding the complexity of mocking the
+    entire startup sequence.
+    """
+
+    def test_run_daemon_imports_slack_functions(self):
+        """Test that run_daemon() imports init_slack and send_startup_ping."""
+        import inspect
+        from src.cli import run_daemon
+
+        source = inspect.getsource(run_daemon)
+
+        # Verify the imports are present
+        assert "from src.slack import init_slack, send_startup_ping" in source, \
+            "run_daemon() must import init_slack and send_startup_ping from src.slack"
+
+    def test_run_daemon_calls_init_slack(self):
+        """Test that run_daemon() calls init_slack with config values."""
+        import inspect
+        from src.cli import run_daemon
+
+        source = inspect.getsource(run_daemon)
+
+        # Verify init_slack is called with the config's slack settings
+        assert "init_slack(config.slack_bot_token, config.slack_user_id)" in source, \
+            "run_daemon() must call init_slack(config.slack_bot_token, config.slack_user_id)"
+
+    def test_run_daemon_calls_send_startup_ping(self):
+        """Test that run_daemon() calls send_startup_ping()."""
+        import inspect
+        from src.cli import run_daemon
+
+        source = inspect.getsource(run_daemon)
+
+        # Verify send_startup_ping is called
+        assert "send_startup_ping()" in source, \
+            "run_daemon() must call send_startup_ping()"
+
+    def test_run_daemon_calls_slack_init_before_daemon_run(self):
+        """Test that Slack initialization happens before daemon.run()."""
+        import inspect
+        from src.cli import run_daemon
+
+        source = inspect.getsource(run_daemon)
+
+        # Find positions of key calls
+        init_slack_pos = source.find("init_slack(config.slack_bot_token")
+        send_startup_ping_pos = source.find("send_startup_ping()")
+        daemon_run_pos = source.find("daemon.run()")
+
+        # Verify order: init_slack -> send_startup_ping -> daemon.run()
+        assert init_slack_pos != -1, "init_slack call not found"
+        assert send_startup_ping_pos != -1, "send_startup_ping call not found"
+        assert daemon_run_pos != -1, "daemon.run() call not found"
+
+        assert init_slack_pos < send_startup_ping_pos, \
+            "init_slack must be called before send_startup_ping"
+        assert send_startup_ping_pos < daemon_run_pos, \
+            "send_startup_ping must be called before daemon.run()"

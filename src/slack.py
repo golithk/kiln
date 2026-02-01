@@ -96,13 +96,13 @@ def send_phase_completion_notification(
         response_data = response.json()
         if not response_data.get("ok"):
             error = response_data.get("error", "unknown error")
-            logger.warning(f"Slack API error: {error}")
+            logger.error(f"Slack API error: {error}")
             return False
 
         logger.info(f"Slack notification sent for issue #{issue_number} ({phase})")
         return True
     except requests.RequestException as e:
-        logger.warning(f"Failed to send Slack notification: {e}")
+        logger.error(f"Failed to send Slack notification: {e}")
         return False
 
 
@@ -143,13 +143,13 @@ def send_startup_ping() -> bool:
         response_data = response.json()
         if not response_data.get("ok"):
             error = response_data.get("error", "unknown error")
-            logger.warning(f"Slack API error sending startup ping: {error}")
+            logger.error(f"Slack API error sending startup ping: {error}")
             return False
 
-        logger.info("Slack startup ping sent")
+        logger.info("Slack startup ping sent successfully")
         return True
     except requests.RequestException as e:
-        logger.warning(f"Failed to send Slack startup ping: {e}")
+        logger.error(f"Failed to send Slack startup ping: {e}")
         return False
 
 

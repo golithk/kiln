@@ -374,6 +374,12 @@ def run_daemon(daemon_mode: bool = False) -> None:
                 service_version=git_version,
             )
 
+        # Initialize Slack if configured
+        from src.slack import init_slack, send_startup_ping
+
+        init_slack(config.slack_bot_token, config.slack_user_id)
+        send_startup_ping()
+
         daemon = Daemon(config, version=git_version)
         daemon.run()
 
