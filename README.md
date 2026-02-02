@@ -43,8 +43,8 @@ Uses GitHub as the end-to-end context and state store:
 - **Single source of truth**: Research and plan outputs are written and iterated on in the issue
 - **Crash recovery**: Nothing local is sacred, local DB is cache only
 - **Visibility**: End to end context is stored as a single artifact, from PRD -> PR
-- **Auditability**: Reporting, observability, who did what when are all timestamped along with the commits
-- **No local mess**: No `.md` files to manage or organize, complete audit trail of which prompts made what edits to the Research/Plan
+- **Observability**: Issue to PR to Merge all timestamped, easy to derive analytics
+- **No `.md` mess**: No local files to manage and organize, see which prompts made what edits to research and plan
 
 ### 🔥 Polling Over Webhooks
 
