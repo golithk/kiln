@@ -36,6 +36,16 @@ Executes workflows via the Claude Code CLI:
 - **No New Auth Setup**: Leverages existing Claude subscription, no trickery
 - **Full Claude capabilities**: `/commands`, MCPs, tools, git operations, local file access
 
+### 🔥 GitHub as Single Source of Truth
+
+Uses GitHub as the end-to-end context and state store:
+
+- **Single source of truth**: Research and plan outputs are written and iterated on in the issue
+- **Crash recovery**: Nothing local is sacred, local DB is cache only
+- **Visibility**: End to end context is stored as a single artifact, from PRD -> PR
+- **Auditability**: Reporting, observability, who did what when are all timestamped along with the commits
+- **No local mess**: No `.md` files to manage or organize, complete audit trail of which prompts made what edits to the Research/Plan
+
 ### 🔥 Polling Over Webhooks
 
 Use periodic polling instead of webhook-based event handling:
@@ -44,15 +54,3 @@ Use periodic polling instead of webhook-based event handling:
 - **Firewall-friendly**: Works behind VPNs without requiring publicly-accessible endpoints
 
 **Trade-off**: 30-second latency (configurable) vs. near-instant webhook response.
-
-### 🔥 GitHub Labels as Single Source of Truth
-
-Use GitHub labels as the state store:
-
-- **Crash recovery**: Nothing local is sacred, local DB is cache only
-- **Visibility**: End to end context is stored as a single artifact, from PRD -> PR
-- **Auditability**: Reporting, observability, who did what when are all timestamped along with the commits
-
-### 🔥 Issues to store all context
-
-Research and plan outputs are written and iterated on in the issue to keep a single source of truth with auditable progression. No `.md` files to manage or organize, complete audit trail of which prompts made what edits to the Research/Plan.
