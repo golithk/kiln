@@ -23,15 +23,6 @@ That's the heart of it and it works because… it's Claude :)
 |-----------|-------------|---------|--------------|-------------|---------|
 | *new issues* | *codebase exploration* | *design tasks* | *write code* | *human review* | *complete* |
 
-| Column    | What Claude Does                                        | Labels                                  |
-|-----------|---------------------------------------------------------|-----------------------------------------|
-| Backlog   | —                                                       | —                                       |
-| Research  | Explores codebase, writes findings to issue             | researching → research_ready            |
-| Plan      | Designs implementation, writes plan to issue            | planning → plan_ready                   |
-| Implement | Executes plan, commits code, opens PR, iterates on review | implementing → reviewing → (Validate) |
-| Validate  | Nothing; Human review — merge PR when ready             | —                                       |
-| Done      | Worktree cleaned up automatically                       | cleaned_up                              |
-
 ## Installation and How-To
 
 See https://kiln.bot/docs
