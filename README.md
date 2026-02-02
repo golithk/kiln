@@ -15,7 +15,7 @@ It's designed to be simple, requires very little setup:
 
 That's the heart of it and it works because… it's Claude :)
 
-![End-to-end demo](docs/end-to-end-flow.gif)
+![Research and Plan demo](https://media.githubusercontent.com/media/agentic-metallurgy/kiln-docs/main/src/assets/research-and-plan-2.gif)
 
 ## Installation and How-To
 
