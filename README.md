@@ -54,3 +54,7 @@ Use periodic polling instead of webhook-based event handling:
 - **Firewall-friendly**: Works behind VPNs without requiring publicly-accessible endpoints
 
 **Trade-off**: 30-second latency (configurable) vs. near-instant webhook response.
+
+## Documentation
+
+https://kiln.bot/docs
