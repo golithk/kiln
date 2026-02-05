@@ -63,24 +63,44 @@ def _migrate_items_to_backlog(
     return migrated_count
 
 
-def _format_column_checklist(existing_names: list[str], project_url: str) -> str:
+def _format_column_checklist(
+    existing_names: list[str],
+    project_url: str,
+    project_index: int = 1,
+    total_projects: int = 1,
+) -> str:
     """Format a checklist showing which columns are correct and which need fixing.
 
     Args:
         existing_names: List of existing column names in current order
         project_url: URL of the GitHub project
+        project_index: Current project number (1-indexed)
+        total_projects: Total number of projects being validated
 
     Returns:
         Formatted checklist string
     """
     existing_set = set(existing_names)
 
+    # Extract org/project# from URL for display
+    # URL format: https://hostname/orgs/ORG/projects/NUMBER
+    try:
+        _, login, project_num = _parse_project_url(project_url)
+        project_label = f"{login}/projects/{project_num}"
+    except ValueError:
+        project_label = project_url
+
     lines = [
         "",
         "GitHub Enterprise 3.14 API doesn't support fixing the project board for you.",
         "You need to manually configure the columns in the correct order and capitalization.",
         "",
-        f"Project: {project_url}",
+        "#" * 50,
+        f"##### Project {project_index} of {total_projects}: {project_label} #####",
+        "#" * 50,
+        "",
+        "Click here to go to your project:",
+        f"  {project_url}",
         "",
         "Required columns (in order):",
     ]
@@ -152,6 +172,8 @@ def _parse_project_url(url: str) -> tuple[str, str, int]:
 def validate_project_columns(
     client: "GitHubClient",
     project_url: str,
+    project_index: int = 1,
+    total_projects: int = 1,
 ) -> ValidationResult:
     """Validate and optionally fix project board columns.
 
@@ -164,6 +186,8 @@ def validate_project_columns(
     Args:
         client: GitHubClient instance
         project_url: URL of the GitHub project
+        project_index: Current project number (1-indexed) for error messages
+        total_projects: Total number of projects being validated
 
     Returns:
         ValidationResult with action taken and message
@@ -186,7 +210,9 @@ def validate_project_columns(
     # Case 1: Only Backlog exists - create all other columns
     if existing_names == ["Backlog"]:
         if not client.supports_column_management:
-            raise SetupError(_format_column_checklist(existing_names, project_url))
+            raise SetupError(_format_column_checklist(
+                existing_names, project_url, project_index, total_projects
+            ))
 
         new_options = [
             {"name": col["name"], "color": col["color"], "description": col["description"]}
@@ -206,7 +232,9 @@ def validate_project_columns(
     # Case 1.5: GitHub default columns - replace with Kiln columns
     if existing_set == GITHUB_DEFAULT_COLUMNS:
         if not client.supports_column_management:
-            raise SetupError(_format_column_checklist(existing_names, project_url))
+            raise SetupError(_format_column_checklist(
+                existing_names, project_url, project_index, total_projects
+            ))
 
         # Migrate items from deprecated statuses to Backlog before replacing columns
         deprecated_statuses = {"Ready", "In progress", "In review"}
@@ -245,7 +273,9 @@ def validate_project_columns(
         else:
             # Need to reorder
             if not client.supports_column_management:
-                raise SetupError(_format_column_checklist(existing_names, project_url))
+                raise SetupError(_format_column_checklist(
+                existing_names, project_url, project_index, total_projects
+            ))
 
             new_options = []
             for col in REQUIRED_COLUMNS:
