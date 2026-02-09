@@ -1,14 +1,14 @@
 # Kiln
 
-Kiln orchestrates Claude Code instances on your local machine using GitHub projects as its control panel.
+Kiln uses GitHub as your UI to dispatch Claude Code.
 
-When you move issues from one column to another, Kiln invokes Claude to run the corresponding /command.
-
-Claude creates the worktrees, researches the codebase, creates and implements the plan.
+You move cards across columns (Backlog -> Research -> Plan -> Implement) and Kiln runs Claude locally, opens PRs, and keeps everything tracked in GitHub.
 
 **Setup instructions**: https://kiln.bot/docs
 
 ![Research and Plan demo](https://media.githubusercontent.com/media/agentic-metallurgy/kiln-docs/main/src/assets/ratio-math-research-ready.gif)
+
+---
 
 ## Design
 
@@ -21,22 +21,22 @@ It's meant to be simple:
 
 That's the heart of it and it works because… it's Claude :)
 
-### 🔥 The Kanban Board
+### The Kanban Board
 
 The control panel—you move Issues around on it and see labels get added/removed to indicate state. [Set up your board](https://kiln.bot/docs/project-board-setup/).
 
-| ⚪ Backlog | 🔵 Research | 🟣 Plan | 🟠 Implement | 🟡 Validate | 🟢 Done |
+| Backlog | Research | Plan | Implement | Validate | Done |
 |-----------|-------------|---------|--------------|-------------|---------|
 | *new issues* | *codebase exploration* | *design tasks* | *write code* | *human review* | *complete* |
 
-### 🔥 Claude CLI as Execution Engine
+### Claude CLI as Execution Engine
 
 Executes workflows via the Claude Code CLI:
 
 - **No New Auth Setup**: Leverages existing Claude subscription, no trickery
 - **Full Claude capabilities**: `/commands`, MCPs, tools, git operations, local file access
 
-### 🔥 GitHub as Single Source of Truth
+### GitHub as Single Source of Truth
 
 Uses GitHub as the end-to-end context and state store:
 
@@ -46,7 +46,7 @@ Uses GitHub as the end-to-end context and state store:
 - **Observability**: Issue to PR to Merge all timestamped, easy to derive analytics
 - **No `.md` mess**: No local files to manage and organize, see which prompts made what edits to research and plan
 
-### 🔥 Polling Over Webhooks
+### Polling Over Webhooks
 
 Use periodic polling instead of webhook-based event handling:
 
@@ -54,15 +54,3 @@ Use periodic polling instead of webhook-based event handling:
 - **Firewall-friendly**: Works behind VPNs without requiring publicly-accessible endpoints
 
 **Trade-off**: 30-second latency (configurable) vs. near-instant webhook response.
-
-## Proactive Code Checks
-
-Kiln includes proactive CI checks that catch common issues before they reach production:
-
-| Check | Command | What it catches |
-|-------|---------|-----------------|
-| Config sync | `make check-config` | Mismatches between `.env.example` and `config.py` |
-| Orphan modules | `make check-orphans` | Python files not imported from entry points or tests |
-| Dead code | `make check-dead-code` | Unused functions/classes (via Vulture) |
-
-Run all checks locally with `make check-all`, or let CI catch them on pull requests.
