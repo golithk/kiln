@@ -21,22 +21,22 @@ It's meant to be simple:
 
 That's the heart of it and it works because… it's Claude :)
 
-### The Kanban Board
+### 🔥 The Kanban Board
 
 The control panel—you move Issues around on it and see labels get added/removed to indicate state. [Set up your board](https://kiln.bot/docs/project-board-setup/).
 
-| Backlog | Research | Plan | Implement | Validate | Done |
+| ⚪ Backlog | 🔵 Research | 🟣 Plan | 🟠 Implement | 🟡 Validate | 🟢 Done |
 |-----------|-------------|---------|--------------|-------------|---------|
 | *new issues* | *codebase exploration* | *design tasks* | *write code* | *human review* | *complete* |
 
-### Claude CLI as Execution Engine
+### 🔥 Claude CLI as Execution Engine
 
 Executes workflows via the Claude Code CLI:
 
 - **No New Auth Setup**: Leverages existing Claude subscription, no trickery
 - **Full Claude capabilities**: `/commands`, MCPs, tools, git operations, local file access
 
-### GitHub as Single Source of Truth
+### 🔥 GitHub as Single Source of Truth
 
 Uses GitHub as the end-to-end context and state store:
 
@@ -46,7 +46,7 @@ Uses GitHub as the end-to-end context and state store:
 - **Observability**: Issue to PR to Merge all timestamped, easy to derive analytics
 - **No `.md` mess**: No local files to manage and organize, see which prompts made what edits to research and plan
 
-### Polling Over Webhooks
+### 🔥 Polling Over Webhooks
 
 Use periodic polling instead of webhook-based event handling:
 
