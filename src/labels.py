@@ -40,8 +40,12 @@ class Labels:
 
     # Control labels
     YOLO = "yolo"
+    AUTO = "auto"  # Synonym for yolo
     YOLO_FAILED = "yolo_failed"
     RESET = "reset"
+
+    # Labels that trigger auto-progression (yolo and its synonyms)
+    YOLO_LABELS = frozenset({YOLO, AUTO})
 
     # Failure labels
     IMPLEMENTATION_FAILED = "implementation_failed"
@@ -89,6 +93,10 @@ REQUIRED_LABELS: dict[str, LabelConfig] = {
     },
     Labels.YOLO: {
         "description": "Auto-progress through Research → Plan → Implement",
+        "color": "A855F7",  # Bright purple
+    },
+    Labels.AUTO: {
+        "description": "Auto-progress through Research → Plan → Implement (synonym for yolo)",
         "color": "A855F7",  # Bright purple
     },
     Labels.YOLO_FAILED: {

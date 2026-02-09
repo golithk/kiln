@@ -559,14 +559,14 @@ def cmd_logs_summary(db: Database) -> None:
         else:
             identifier = f"{issue.repo}#{issue.issue_number}"
 
-        # Fetch labels for YOLO detection and state
+        # Fetch labels for YOLO/AUTO detection and state
         labels = client.get_ticket_labels(issue.repo, issue.issue_number)
-        is_yolo = "yolo" in labels
+        auto_label = "yolo" if "yolo" in labels else ("auto" if "auto" in labels else None)
 
         # Determine state from labels (most specific first)
         state = _determine_state(labels, issue.status)
-        if is_yolo:
-            state = f"{state} (yolo)"
+        if auto_label:
+            state = f"{state} ({auto_label})"
 
         # Fetch PR info
         prs = client.get_linked_prs(issue.repo, issue.issue_number)

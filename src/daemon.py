@@ -1053,24 +1053,26 @@ class Daemon:
                 if self._might_have_new_comments(item):
                     self.executor.submit(self.comment_processor.process, item)
 
-            # YOLO: Move Backlog issues with yolo label to Research
+            # YOLO: Move Backlog issues with yolo/auto label to Research
             for item in all_items:
                 # Fast path: if not in cached labels, definitely not present
-                if Labels.YOLO not in item.labels:
+                if not self._has_any_yolo_label(item.labels):
                     continue
                 if item.status != "Backlog" or item.state == "CLOSED":
                     continue
 
                 key = f"{item.repo}#{item.ticket_id}"
 
-                # Fresh check: verify yolo label is still present (may have been removed since poll started)
+                # Fresh check: verify yolo/auto label is still present (may have been removed since poll started)
                 if not self._has_yolo_label(item.repo, item.ticket_id):
                     logger.debug(
-                        f"YOLO: Skipping Backlog→Research for {key} - yolo label was removed"
+                        f"YOLO: Skipping Backlog→Research for {key} - yolo/auto label was removed"
                     )
                     continue
 
-                actor = self.ticket_client.get_label_actor(item.repo, item.ticket_id, Labels.YOLO)
+                # Get the specific yolo-like label that was added
+                yolo_label = self._get_yolo_label_from(item.labels) or Labels.YOLO
+                actor = self.ticket_client.get_label_actor(item.repo, item.ticket_id, yolo_label)
                 actor_category = check_actor_allowed(
                     actor, self.config.username_self, key, "YOLO", self.config.team_usernames
                 )
@@ -1230,9 +1232,9 @@ class Daemon:
         return True
 
     def _should_yolo_advance(self, item: TicketItem) -> bool:
-        """Check if an item should advance via YOLO (has yolo label but can't run workflow).
+        """Check if an item should advance via YOLO (has yolo/auto label but can't run workflow).
 
-        This handles the case where yolo is added after a workflow stage completes.
+        This handles the case where yolo/auto is added after a workflow stage completes.
         For example, if yolo is added when an issue has research_ready label in Research status,
         it should advance to Plan.
 
@@ -1243,7 +1245,7 @@ class Daemon:
             True if item should be advanced to next YOLO status
         """
         # Fast path: if not in cached labels, definitely not present
-        if Labels.YOLO not in item.labels:
+        if not self._has_any_yolo_label(item.labels):
             return False
 
         # Skip closed issues
@@ -1278,7 +1280,7 @@ class Daemon:
     def _yolo_advance(self, item: TicketItem) -> None:
         """Advance an item to the next YOLO status.
 
-        Validates that the yolo label was added by an allowed user before advancing.
+        Validates that the yolo/auto label was added by an allowed user before advancing.
         Also verifies the label is still present (fresh check) in case it was removed
         after _should_yolo_advance() returned True but before this method runs.
 
@@ -1291,12 +1293,14 @@ class Daemon:
         if not yolo_next:
             return
 
-        # Fresh check: verify yolo label is still present before advancing
+        # Fresh check: verify yolo/auto label is still present before advancing
         if not self._has_yolo_label(item.repo, item.ticket_id):
-            logger.info(f"YOLO: Skipping advancement for {key} - yolo label was removed")
+            logger.info(f"YOLO: Skipping advancement for {key} - yolo/auto label was removed")
             return
 
-        actor = self.ticket_client.get_label_actor(item.repo, item.ticket_id, Labels.YOLO)
+        # Get the specific yolo-like label that was added
+        yolo_label = self._get_yolo_label_from(item.labels) or Labels.YOLO
+        actor = self.ticket_client.get_label_actor(item.repo, item.ticket_id, yolo_label)
         actor_category = check_actor_allowed(
             actor, self.config.username_self, key, "YOLO", self.config.team_usernames
         )
@@ -1310,11 +1314,40 @@ class Daemon:
         hostname = self._get_hostname_from_url(item.board_url)
         self.ticket_client.update_item_status(item.item_id, yolo_next, hostname=hostname)
 
+    @staticmethod
+    def _has_any_yolo_label(labels: set[str]) -> bool:
+        """Check if a set of labels contains any yolo-like label (yolo or auto).
+
+        Args:
+            labels: Set of label names
+
+        Returns:
+            True if any yolo-like label is present
+        """
+        return bool(labels & Labels.YOLO_LABELS)
+
+    @staticmethod
+    def _get_yolo_label_from(labels: set[str]) -> str | None:
+        """Get the yolo-like label from a set of labels.
+
+        Args:
+            labels: Set of label names
+
+        Returns:
+            The yolo-like label name if found, None otherwise.
+            Prefers 'yolo' over 'auto' if both are present.
+        """
+        if Labels.YOLO in labels:
+            return Labels.YOLO
+        if Labels.AUTO in labels:
+            return Labels.AUTO
+        return None
+
     def _has_yolo_label(self, repo: str, issue_number: int) -> bool:
-        """Check if issue currently has yolo label (fresh from GitHub).
+        """Check if issue currently has yolo or auto label (fresh from GitHub).
 
         This fetches fresh label data from GitHub to handle the case where
-        a user removes the yolo label mid-workflow. Using cached item.labels
+        a user removes the yolo/auto label mid-workflow. Using cached item.labels
         would miss this change.
 
         Args:
@@ -1322,12 +1355,12 @@ class Daemon:
             issue_number: Issue number
 
         Returns:
-            True if yolo label is currently present, False otherwise.
+            True if yolo or auto label is currently present, False otherwise.
             Returns False on any error (fail-safe: don't advance if uncertain).
         """
         try:
             current_labels = self.ticket_client.get_ticket_labels(repo, issue_number)
-            return Labels.YOLO in current_labels
+            return self._has_any_yolo_label(current_labels)
         except Exception as e:
             logger.warning(f"Could not fetch current labels for {repo}#{issue_number}: {e}")
             return False  # Fail safe - don't advance if we can't verify
@@ -2224,8 +2257,8 @@ class Daemon:
                 logger.info(f"Moved {key} to '{next_status}' status")
 
             # YOLO mode: auto-advance to next workflow status
-            # Re-check yolo label to handle removal during workflow execution
-            if Labels.YOLO in item.labels and not next_status:
+            # Re-check yolo/auto label to handle removal during workflow execution
+            if self._has_any_yolo_label(item.labels) and not next_status:
                 yolo_next = self.YOLO_PROGRESSION.get(item.status)
                 if yolo_next:
                     # Fresh check - yolo may have been removed while workflow was running
@@ -2246,7 +2279,7 @@ class Daemon:
             # For Implement, we check if we moved to Validate (via next_status or checkbox completion)
             # next_status is set to None after moving to Validate, so we check if status was Implement
             # and the config indicates it should move to Validate
-            is_yolo = Labels.YOLO in item.labels
+            is_yolo = self._has_any_yolo_label(item.labels)
             moved_to_validate = bool(
                 item.status == "Implement" and config and config["next_status"] == "Validate"
             )
@@ -2322,19 +2355,21 @@ class Daemon:
                 except Exception as label_err:
                     logger.warning(f"Could not remove running label after failure: {label_err}")
 
-            # YOLO mode failure: remove yolo label, add yolo_failed
-            # Fetch fresh labels to detect if YOLO was removed during workflow
-            if Labels.YOLO in item.labels:
+            # YOLO mode failure: remove yolo/auto label, add yolo_failed
+            # Fetch fresh labels to detect if YOLO/AUTO was removed during workflow
+            yolo_label = self._get_yolo_label_from(item.labels)
+            if yolo_label:
                 try:
                     fresh_labels = self.ticket_client.get_ticket_labels(item.repo, item.ticket_id)
-                    if Labels.YOLO in fresh_labels:
-                        self.ticket_client.remove_label(item.repo, item.ticket_id, Labels.YOLO)
+                    fresh_yolo_label = self._get_yolo_label_from(fresh_labels)
+                    if fresh_yolo_label:
+                        self.ticket_client.remove_label(item.repo, item.ticket_id, fresh_yolo_label)
                         self.ticket_client.add_label(item.repo, item.ticket_id, Labels.YOLO_FAILED)
                         logger.warning(
                             f"YOLO: Workflow failed for {key}, cancelled auto-progression"
                         )
                     else:
-                        # YOLO label was removed during workflow, skip failure handling
+                        # YOLO/AUTO label was removed during workflow, skip failure handling
                         logger.info(
                             f"YOLO: Skipped failure handling for {key}, label removed during workflow"
                         )

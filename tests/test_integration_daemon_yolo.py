@@ -1,6 +1,7 @@
 """Integration tests for Daemon YOLO label functionality.
 
-Tests for YOLO label removal stopping automatic progression.
+Tests for YOLO label removal stopping automatic progression,
+and 'auto' label as a synonym for 'yolo'.
 """
 
 from unittest.mock import MagicMock, patch
@@ -140,4 +141,114 @@ class TestDaemonYoloLabelRemoval:
         # Should update status
         daemon.ticket_client.update_item_status.assert_called_once_with(
             "PVI_123", "Plan", hostname="github.com"
+        )
+
+
+@pytest.mark.integration
+class TestDaemonAutoLabelSynonym:
+    """Tests for 'auto' label functioning as a synonym for 'yolo'."""
+
+    @pytest.fixture
+    def daemon(self, temp_workspace_dir):
+        """Create a daemon instance for testing."""
+        config = MagicMock()
+        config.poll_interval = 60
+        config.watched_statuses = ["Research", "Plan", "Implement"]
+        config.max_concurrent_workflows = 2
+        config.database_path = f"{temp_workspace_dir}/test.db"
+        config.workspace_dir = temp_workspace_dir
+        config.project_urls = ["https://github.com/orgs/test/projects/1"]
+
+        config.github_enterprise_version = None
+        config.username_self = "test-user"
+
+        with patch("src.ticket_clients.github.GitHubTicketClient"):
+            daemon = Daemon(config)
+            daemon.ticket_client = MagicMock()
+            yield daemon
+            daemon.stop()
+
+    def test_has_yolo_label_returns_true_when_auto_present(self, daemon):
+        """Test _has_yolo_label returns True when 'auto' label is present."""
+        daemon.ticket_client.get_ticket_labels.return_value = {"auto", "bug", "enhancement"}
+
+        result = daemon._has_yolo_label("github.com/owner/repo", 42)
+
+        assert result is True
+        daemon.ticket_client.get_ticket_labels.assert_called_once_with("github.com/owner/repo", 42)
+
+    def test_has_any_yolo_label_detects_yolo(self, daemon):
+        """Test _has_any_yolo_label returns True for 'yolo' label."""
+        result = daemon._has_any_yolo_label({"yolo", "bug"})
+        assert result is True
+
+    def test_has_any_yolo_label_detects_auto(self, daemon):
+        """Test _has_any_yolo_label returns True for 'auto' label."""
+        result = daemon._has_any_yolo_label({"auto", "bug"})
+        assert result is True
+
+    def test_has_any_yolo_label_returns_false_when_neither(self, daemon):
+        """Test _has_any_yolo_label returns False when neither label present."""
+        result = daemon._has_any_yolo_label({"bug", "enhancement"})
+        assert result is False
+
+    def test_get_yolo_label_from_prefers_yolo_over_auto(self, daemon):
+        """Test _get_yolo_label_from returns 'yolo' when both present."""
+        result = daemon._get_yolo_label_from({"yolo", "auto", "bug"})
+        assert result == "yolo"
+
+    def test_get_yolo_label_from_returns_auto_when_only_auto(self, daemon):
+        """Test _get_yolo_label_from returns 'auto' when only 'auto' present."""
+        result = daemon._get_yolo_label_from({"auto", "bug"})
+        assert result == "auto"
+
+    def test_get_yolo_label_from_returns_none_when_neither(self, daemon):
+        """Test _get_yolo_label_from returns None when neither present."""
+        result = daemon._get_yolo_label_from({"bug", "enhancement"})
+        assert result is None
+
+    def test_should_yolo_advance_works_with_auto_label(self, daemon):
+        """Test _should_yolo_advance returns True when 'auto' label is present."""
+        item = TicketItem(
+            item_id="PVI_123",
+            board_url="https://github.com/orgs/test/projects/1",
+            ticket_id=42,
+            title="Test Issue",
+            repo="github.com/owner/repo",
+            status="Research",
+            labels={"auto", "research_ready"},
+        )
+
+        # Fresh check shows auto is still present
+        daemon.ticket_client.get_ticket_labels.return_value = {"auto", "research_ready"}
+
+        result = daemon._should_yolo_advance(item)
+
+        assert result is True
+
+    def test_yolo_advance_proceeds_with_auto_label(self, daemon):
+        """Test _yolo_advance proceeds when 'auto' label is present."""
+        item = TicketItem(
+            item_id="PVI_123",
+            board_url="https://github.com/orgs/test/projects/1",
+            ticket_id=42,
+            title="Test Issue",
+            repo="github.com/owner/repo",
+            status="Research",
+            labels={"auto", "research_ready"},
+        )
+
+        # Fresh check shows auto is still present
+        daemon.ticket_client.get_ticket_labels.return_value = {"auto", "research_ready"}
+        daemon.ticket_client.get_label_actor.return_value = "test-user"
+
+        daemon._yolo_advance(item)
+
+        # Should update status
+        daemon.ticket_client.update_item_status.assert_called_once_with(
+            "PVI_123", "Plan", hostname="github.com"
+        )
+        # Should check the 'auto' label actor (not 'yolo')
+        daemon.ticket_client.get_label_actor.assert_called_once_with(
+            "github.com/owner/repo", 42, "auto"
         )
