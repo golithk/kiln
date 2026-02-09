@@ -774,6 +774,57 @@ class TestMCPConfigManagerValidateRemoteServers:
 
 
 @pytest.mark.unit
+class TestMCPConfigManagerRefreshTokens:
+    """Tests for MCPConfigManager.refresh_mcp_tokens()."""
+
+    def test_refresh_tokens_no_azure_client(self):
+        """Test refresh returns True when no Azure client configured."""
+        manager = MCPConfigManager()
+
+        result = manager.refresh_mcp_tokens()
+
+        assert result is True
+
+    def test_refresh_tokens_success(self):
+        """Test successful token refresh."""
+        mock_client = MagicMock(spec=AzureOAuthClient)
+        mock_client.get_token.return_value = "new-token"
+
+        manager = MCPConfigManager(azure_client=mock_client)
+
+        result = manager.refresh_mcp_tokens()
+
+        assert result is True
+        mock_client.clear_token.assert_called_once()
+        mock_client.get_token.assert_called_once()
+
+    def test_refresh_tokens_failure(self):
+        """Test token refresh failure returns False."""
+        mock_client = MagicMock(spec=AzureOAuthClient)
+        mock_client.get_token.side_effect = AzureTokenRequestError("Auth failed")
+
+        manager = MCPConfigManager(azure_client=mock_client)
+
+        result = manager.refresh_mcp_tokens()
+
+        assert result is False
+        mock_client.clear_token.assert_called_once()
+        mock_client.get_token.assert_called_once()
+
+    def test_refresh_tokens_clears_cache_before_request(self):
+        """Test that clear_token is called before get_token."""
+        call_order = []
+        mock_client = MagicMock(spec=AzureOAuthClient)
+        mock_client.clear_token.side_effect = lambda: call_order.append("clear")
+        mock_client.get_token.side_effect = lambda: (call_order.append("get"), "token")[1]
+
+        manager = MCPConfigManager(azure_client=mock_client)
+        manager.refresh_mcp_tokens()
+
+        assert call_order == ["clear", "get"]
+
+
+@pytest.mark.unit
 class TestMCPConfigExceptions:
     """Tests for MCP config exception classes."""
 

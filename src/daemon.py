@@ -30,7 +30,12 @@ from src.integrations.azure_oauth import AzureOAuthClient
 from src.integrations.mcp_client import check_all_mcp_servers
 from src.integrations.mcp_config import MCPConfigManager
 from src.integrations.repo_credentials import RepoCredentialsManager
-from src.integrations.slack import init_slack, send_phase_completion_notification, send_startup_ping
+from src.integrations.slack import (
+    init_slack,
+    send_mcp_failure_notification,
+    send_phase_completion_notification,
+    send_startup_ping,
+)
 from src.integrations.telemetry import (
     get_git_version,
     get_tracer,
@@ -368,26 +373,8 @@ class Daemon:
             azure_client=self.azure_oauth_client,
         )
 
-        # Validate MCP config at startup
-        mcp_warnings = self.mcp_config_manager.validate_config()
-        for warning in mcp_warnings:
-            logger.warning(f"MCP config warning: {warning}")
-
-        mcp_config = self.mcp_config_manager.load_config()
-        if mcp_config is not None:
-            mcp_servers = mcp_config.mcp_servers
-            logger.info(f"MCP configuration loaded with {len(mcp_servers)} server(s)")
-
-            # Test MCP server connectivity and list tools
-            results = asyncio.run(check_all_mcp_servers(mcp_servers))
-            for result in results:
-                if result.success:
-                    tools_str = ", ".join(result.tools) if result.tools else "none"
-                    logger.info(
-                        f"  {result.server_name} MCP loaded successfully. Tools: {tools_str}"
-                    )
-                else:
-                    logger.warning(f"  {result.server_name} MCP: {result.error}")
+        # Validate MCP config at startup (fail fast if mcp_fail_on_error is enabled)
+        self._validate_mcp_connections()
 
         # Initialize repo credentials manager
         self.repo_credentials_manager = RepoCredentialsManager()
@@ -492,6 +479,104 @@ class Daemon:
             self.ticket_client.validate_scopes(hostname)
 
         logger.info(f"GitHub connection validation successful for {len(hostnames)} host(s)")
+
+    def _validate_mcp_connections(self) -> None:
+        """Validate MCP server connections at startup.
+
+        Tests connectivity to all configured MCP servers and validates the
+        MCP configuration structure. This provides early warning of MCP
+        misconfigurations.
+
+        When mcp_fail_on_error is True, raises RuntimeError if any MCP server
+        fails to connect. Otherwise, logs warnings and continues.
+
+        Raises:
+            RuntimeError: If any MCP server fails and mcp_fail_on_error is True
+        """
+        # Validate config structure first
+        mcp_warnings = self.mcp_config_manager.validate_config()
+        for warning in mcp_warnings:
+            logger.warning(f"MCP config warning: {warning}")
+
+        mcp_config = self.mcp_config_manager.load_config()
+        if mcp_config is None:
+            logger.debug("No MCP configuration found")
+            return
+
+        mcp_servers = mcp_config.mcp_servers
+        if len(mcp_servers) == 0:
+            logger.debug("No MCP servers configured")
+            return
+
+        logger.info(f"Validating MCP connections ({len(mcp_servers)} server(s))...")
+
+        # Test MCP server connectivity and list tools
+        results = asyncio.run(check_all_mcp_servers(mcp_servers))
+        failed_servers = []
+
+        for result in results:
+            if result.success:
+                tools_str = ", ".join(result.tools) if result.tools else "none"
+                logger.info(f"  {result.server_name} MCP loaded successfully. Tools: {tools_str}")
+            else:
+                logger.warning(f"  {result.server_name} MCP: {result.error}")
+                failed_servers.append(result)
+
+        # If fail-on-error is enabled and any server failed, raise an error
+        if failed_servers and self.config.mcp_fail_on_error:
+            names = ", ".join(r.server_name for r in failed_servers)
+            raise RuntimeError(f"MCP validation failed for: {names}")
+
+        if failed_servers:
+            logger.warning(
+                f"{len(failed_servers)} MCP server(s) failed validation. "
+                "Set MCP_FAIL_ON_ERROR=true to block startup on MCP failures."
+            )
+
+    def _check_mcp_health_before_workflow(
+        self,
+        issue_number: int | None = None,
+    ) -> bool:
+        """Check MCP server health before workflow execution.
+
+        Uses the existing check_all_mcp_servers() function to validate all
+        configured MCP servers before spawning a Claude subprocess. On failure,
+        logs warnings and sends Slack notifications to alert the user.
+
+        Args:
+            issue_number: Optional issue number for Slack notification context
+
+        Returns:
+            True if all MCP servers are healthy (or no MCP configured),
+            False if any server failed health check
+        """
+        mcp_config = self.mcp_config_manager.load_config()
+        if mcp_config is None:
+            return True
+
+        mcp_servers = mcp_config.mcp_servers
+        if len(mcp_servers) == 0:
+            return True
+
+        logger.debug(f"Checking MCP health before workflow ({len(mcp_servers)} server(s))...")
+
+        results = asyncio.run(check_all_mcp_servers(mcp_servers))
+        failed = [r for r in results if not r.success]
+
+        if failed:
+            for result in failed:
+                logger.warning(
+                    f"MCP server '{result.server_name}' unavailable before workflow: {result.error}"
+                )
+                send_mcp_failure_notification(
+                    result.server_name,
+                    result.error or "Unknown error",
+                    issue_number,
+                )
+            return False
+
+        logger.debug("All MCP servers healthy")
+        return True
 
     def _initialize_project_metadata(self) -> None:
         """Fetch and cache project metadata (status options) on startup.
@@ -2006,16 +2091,23 @@ class Daemon:
                     f"Verified we claimed '{running_label}' on {key}, proceeding with workflow"
                 )
 
-            # Write MCP config to worktree if configured
+            # Check MCP health and write config to worktree if healthy
             mcp_config_path: str | None = None
             if self.mcp_config_manager.has_config():
-                try:
-                    mcp_config_path = self.mcp_config_manager.write_to_worktree(worktree_path)
-                    if mcp_config_path:
-                        logger.info(f"Wrote MCP config to {mcp_config_path}")
-                except Exception as e:
-                    # Log warning but don't fail the workflow
-                    logger.warning(f"Failed to write MCP config to worktree: {e}")
+                # Check MCP server health before workflow
+                mcp_healthy = self._check_mcp_health_before_workflow(item.ticket_id)
+                if not mcp_healthy:
+                    logger.warning("MCP servers unavailable, proceeding without MCP config")
+                else:
+                    # Refresh OAuth tokens before workflow to prevent mid-workflow auth failures
+                    self.mcp_config_manager.refresh_mcp_tokens()
+                    try:
+                        mcp_config_path = self.mcp_config_manager.write_to_worktree(worktree_path)
+                        if mcp_config_path:
+                            logger.info(f"Wrote MCP config to {mcp_config_path}")
+                    except Exception as e:
+                        # Log warning but don't fail the workflow
+                        logger.warning(f"Failed to write MCP config to worktree: {e}")
 
             # Copy repo credentials to worktree if configured
             if self.repo_credentials_manager.has_config():

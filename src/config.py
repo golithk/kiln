@@ -146,6 +146,9 @@ class Config:
     azure_scope: str | None = (
         None  # Defaults to "https://graph.microsoft.com/.default" if not specified
     )
+    mcp_fail_on_error: bool = (
+        False  # When True, daemon fails to start if any MCP server is unreachable
+    )
 
 
 def determine_workspace_dir() -> str:
@@ -403,6 +406,9 @@ def load_config_from_file(config_path: Path) -> Config:
             "must be set together or none at all."
         )
 
+    # MCP fail-on-error setting
+    mcp_fail_on_error = data.get("MCP_FAIL_ON_ERROR", "false").lower() == "true"
+
     return Config(
         github_token=github_token,
         github_enterprise_host=github_enterprise_host,
@@ -431,6 +437,7 @@ def load_config_from_file(config_path: Path) -> Config:
         azure_username=azure_username,
         azure_password=azure_password,
         azure_scope=azure_scope,
+        mcp_fail_on_error=mcp_fail_on_error,
     )
 
 
@@ -593,6 +600,9 @@ def load_config_from_env() -> Config:
             "must be set together or none at all."
         )
 
+    # MCP fail-on-error setting
+    mcp_fail_on_error = os.environ.get("MCP_FAIL_ON_ERROR", "false").lower() == "true"
+
     return Config(
         github_token=github_token,
         github_enterprise_host=github_enterprise_host,
@@ -621,6 +631,7 @@ def load_config_from_env() -> Config:
         azure_username=azure_username,
         azure_password=azure_password,
         azure_scope=azure_scope,
+        mcp_fail_on_error=mcp_fail_on_error,
     )
 
 

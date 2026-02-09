@@ -360,6 +360,7 @@ class TestDaemonMCPStartupLogging:
         config.azure_username = None
         config.azure_password = None
         config.azure_scope = None
+        config.mcp_fail_on_error = False
         return config
 
     def test_daemon_logs_successful_mcp_connections(self, base_config, mock_mcp_config):

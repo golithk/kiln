@@ -228,6 +228,32 @@ class MCPConfigManager:
         self._cached_config = None
         logger.debug("MCP config cache cleared")
 
+    def refresh_mcp_tokens(self) -> bool:
+        """Refresh OAuth tokens for MCP servers before workflow execution.
+
+        Clears the cached token in the Azure OAuth client and requests a fresh
+        token. This ensures tokens are valid before starting a workflow to
+        prevent mid-workflow auth failures.
+
+        Returns:
+            True if tokens were refreshed successfully (or no refresh needed).
+            False if token refresh failed.
+        """
+        if self.azure_client is None:
+            logger.debug("No Azure OAuth client configured, skipping token refresh")
+            return True
+
+        try:
+            # Clear cache to force fresh token
+            self.azure_client.clear_token()
+            # This will request a new token
+            self.azure_client.get_token()
+            logger.debug("MCP OAuth tokens refreshed successfully")
+            return True
+        except AzureOAuthError as e:
+            logger.warning(f"Failed to refresh MCP OAuth token: {e}")
+            return False
+
     def is_remote_server(self, server_config: dict[str, Any]) -> bool:
         """Check if server config is for a remote MCP (has url field).
 

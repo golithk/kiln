@@ -330,6 +330,65 @@ def send_comment_processed_notification(
         return False
 
 
+def send_mcp_failure_notification(
+    server_name: str,
+    error_message: str,
+    issue_number: int | None = None,
+) -> bool:
+    """Send a Slack DM notification when an MCP server is unavailable.
+
+    Sends a direct message to the configured Slack user indicating that
+    an MCP server failed health check before workflow execution.
+
+    Args:
+        server_name: Name of the failed MCP server
+        error_message: Error details describing the failure
+        issue_number: Optional issue number for context
+
+    Returns:
+        True if notification was sent successfully, False otherwise.
+        Returns False without error if Slack is not initialized.
+    """
+    if not _initialized or not _bot_token or not _user_id:
+        return False
+
+    context = f" (issue #{issue_number})" if issue_number else ""
+    message = f"⚠️ MCP server '{server_name}' unavailable{context}: {error_message}"
+
+    payload = {
+        "channel": _user_id,
+        "text": message,
+        "unfurl_links": False,
+        "unfurl_media": False,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {_bot_token}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            SLACK_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        response_data = response.json()
+        if not response_data.get("ok"):
+            error = response_data.get("error", "unknown error")
+            logger.error(f"Slack API error sending MCP failure notification: {error}")
+            return False
+
+        logger.info(f"Slack notification sent for MCP server '{server_name}' failure{context}")
+        return True
+    except requests.RequestException as e:
+        logger.error(f"Failed to send Slack MCP failure notification: {e}")
+        return False
+
+
 def reset_slack() -> None:
     """Reset Slack module state (for testing only).
 

@@ -7,6 +7,9 @@ Tests verify:
 - send_comment_processed_notification() success case
 - send_comment_processed_notification() when not initialized
 - send_comment_processed_notification() API error handling
+- send_mcp_failure_notification() success case
+- send_mcp_failure_notification() when not initialized
+- send_mcp_failure_notification() API error handling
 """
 
 from unittest.mock import MagicMock, patch
@@ -563,6 +566,128 @@ class TestSendPhaseCompletionNotification:
                 issue_url="https://github.com/org/repo/issues/42",
                 phase="Research",
                 issue_title="Test Issue",
+                issue_number=42,
+            )
+
+            assert result is False
+
+
+@pytest.mark.unit
+class TestSendMcpFailureNotification:
+    """Tests for send_mcp_failure_notification() function."""
+
+    def test_returns_false_when_not_initialized(self):
+        """Test send_mcp_failure_notification() returns False when not initialized."""
+        result = slack.send_mcp_failure_notification(
+            server_name="my-mcp-server",
+            error_message="Connection refused",
+            issue_number=42,
+        )
+
+        assert result is False
+
+    def test_success_with_issue_number(self):
+        """Test send_mcp_failure_notification() returns True on success with issue number."""
+        slack.init_slack("xoxb-test-token", "U12345")
+
+        with patch("src.integrations.slack.requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {"ok": True}
+            mock_post.return_value = mock_response
+
+            result = slack.send_mcp_failure_notification(
+                server_name="my-mcp-server",
+                error_message="Connection refused",
+                issue_number=42,
+            )
+
+            assert result is True
+            mock_post.assert_called_once()
+
+            # Verify the API call details
+            call_args = mock_post.call_args
+            assert call_args[0][0] == slack.SLACK_API_URL
+            assert call_args[1]["timeout"] == 10
+
+            payload = call_args[1]["json"]
+            assert payload["channel"] == "U12345"
+            assert "⚠️" in payload["text"]
+            assert "MCP server 'my-mcp-server' unavailable" in payload["text"]
+            assert "(issue #42)" in payload["text"]
+            assert "Connection refused" in payload["text"]
+            assert payload["unfurl_links"] is False
+            assert payload["unfurl_media"] is False
+
+            headers = call_args[1]["headers"]
+            assert headers["Authorization"] == "Bearer xoxb-test-token"
+            assert headers["Content-Type"] == "application/json"
+
+    def test_success_without_issue_number(self):
+        """Test send_mcp_failure_notification() returns True on success without issue number."""
+        slack.init_slack("xoxb-test-token", "U12345")
+
+        with patch("src.integrations.slack.requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {"ok": True}
+            mock_post.return_value = mock_response
+
+            result = slack.send_mcp_failure_notification(
+                server_name="my-mcp-server",
+                error_message="Connection refused",
+            )
+
+            assert result is True
+            mock_post.assert_called_once()
+
+            payload = mock_post.call_args[1]["json"]
+            assert "(issue #" not in payload["text"]
+            assert "MCP server 'my-mcp-server' unavailable: Connection refused" in payload["text"]
+
+    def test_handles_slack_api_error(self):
+        """Test send_mcp_failure_notification() handles Slack API error gracefully."""
+        slack.init_slack("xoxb-test-token", "U12345")
+
+        with patch("src.integrations.slack.requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {"ok": False, "error": "channel_not_found"}
+            mock_post.return_value = mock_response
+
+            result = slack.send_mcp_failure_notification(
+                server_name="my-mcp-server",
+                error_message="Connection refused",
+                issue_number=42,
+            )
+
+            assert result is False
+
+    def test_handles_http_timeout_gracefully(self):
+        """Test send_mcp_failure_notification() handles timeout gracefully."""
+        slack.init_slack("xoxb-test-token", "U12345")
+
+        with patch("src.integrations.slack.requests.post") as mock_post:
+            mock_post.side_effect = requests.Timeout("Connection timed out")
+
+            result = slack.send_mcp_failure_notification(
+                server_name="my-mcp-server",
+                error_message="Connection refused",
+                issue_number=42,
+            )
+
+            assert result is False
+
+    def test_handles_http_connection_error_gracefully(self):
+        """Test send_mcp_failure_notification() handles connection error gracefully."""
+        slack.init_slack("xoxb-test-token", "U12345")
+
+        with patch("src.integrations.slack.requests.post") as mock_post:
+            mock_post.side_effect = requests.ConnectionError("Connection refused")
+
+            result = slack.send_mcp_failure_notification(
+                server_name="my-mcp-server",
+                error_message="Connection refused",
                 issue_number=42,
             )
 
