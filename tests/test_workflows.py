@@ -850,6 +850,7 @@ class TestImplementWorkflow:
         mock_config = MagicMock(spec=Config)
 
         mock_config.safety_allow_appended_tasks = 0
+        mock_config.prepare_pr_delay = 10
 
         # First call: no PR found
         # Second call: PR found after prepare_implementation_github
@@ -874,6 +875,7 @@ class TestImplementWorkflow:
         with (
             patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr_create),
             patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.time.sleep"),
         ):
             workflow.execute(workflow_context, mock_config)
 
@@ -883,27 +885,35 @@ class TestImplementWorkflow:
         ]
         assert len(prepare_calls) == 1
 
-    def test_execute_fails_after_two_pr_creation_attempts(self, workflow_context):
-        """Test that execute() raises RuntimeError after 2 failed PR creation attempts."""
+    def test_execute_fails_after_three_pr_creation_attempts(self, workflow_context):
+        """Test that execute() raises RuntimeError after 3 failed PR creation attempts."""
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
 
         workflow = ImplementWorkflow()
 
-        # Mock config
+        # Mock config with prepare_pr_delay
         mock_config = MagicMock(spec=Config)
+        mock_config.prepare_pr_delay = 10
 
         # Always return None (no PR found)
         with (
             patch.object(workflow, "_get_pr_for_issue", return_value=None),
             patch.object(workflow, "_run_prompt") as mock_run,
-            pytest.raises(RuntimeError, match="Failed to create PR.*after 2 attempts"),
+            patch("src.workflows.implement.time.sleep") as mock_sleep,
+            pytest.raises(RuntimeError, match="Failed to create PR.*after 3 attempts"),
         ):
             workflow.execute(workflow_context, mock_config)
 
-        # Verify prepare_implementation was called twice
-        assert mock_run.call_count == 2
+        # Verify prepare_implementation was called three times
+        assert mock_run.call_count == 3
+
+        # Verify sleep was called with exponential delays: 10, 30, 90
+        assert mock_sleep.call_count == 3
+        mock_sleep.assert_any_call(10)  # 10 * 1
+        mock_sleep.assert_any_call(30)  # 10 * 3
+        mock_sleep.assert_any_call(90)  # 10 * 9
 
     def test_execute_max_iterations_based_on_task_count(self, workflow_context):
         """Test that execute() sets max_iterations based on TASK count in PR body.
@@ -1625,6 +1635,88 @@ Some other content here.
         with patch("src.workflows.implement.time.sleep"):
             with pytest.raises(NetworkError, match="failed after 3 attempts"):
                 _retry_with_backoff(always_fail, max_attempts=3, description="test operation")
+
+    def test_execute_uses_exponential_delay_with_config_value(self, workflow_context):
+        """Test that execute() uses exponential delays based on config.prepare_pr_delay.
+
+        The delay should be: prepare_pr_delay * 1, prepare_pr_delay * 3, prepare_pr_delay * 9
+        for attempts 1, 2, 3 respectively.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from src.config import Config
+
+        workflow = ImplementWorkflow()
+
+        # Use a custom delay value to verify the config is being used
+        mock_config = MagicMock(spec=Config)
+        mock_config.prepare_pr_delay = 5  # Custom value (not the default 10)
+
+        # Always return None (no PR found) to trigger all 3 attempts
+        with (
+            patch.object(workflow, "_get_pr_for_issue", return_value=None),
+            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.time.sleep") as mock_sleep,
+            pytest.raises(RuntimeError, match="Failed to create PR.*after 3 attempts"),
+        ):
+            workflow.execute(workflow_context, mock_config)
+
+        # Verify prepare_implementation was called three times
+        assert mock_run.call_count == 3
+
+        # Verify sleep was called with exponential delays using custom config value
+        # 5 * 1 = 5, 5 * 3 = 15, 5 * 9 = 45
+        assert mock_sleep.call_count == 3
+        mock_sleep.assert_any_call(5)  # 5 * 1
+        mock_sleep.assert_any_call(15)  # 5 * 3
+        mock_sleep.assert_any_call(45)  # 5 * 9
+
+    def test_execute_pr_found_on_first_attempt_minimal_delay(self, workflow_context):
+        """Test that when PR is created on first attempt, only one delay is used."""
+        from unittest.mock import MagicMock, patch
+
+        from src.config import Config
+
+        workflow = ImplementWorkflow()
+
+        mock_config = MagicMock(spec=Config)
+        mock_config.prepare_pr_delay = 10
+        mock_config.safety_allow_appended_tasks = 0
+
+        # First call: no PR, second call (after prepare): PR found and complete
+        pr_responses = [
+            None,  # Initial check - no PR
+            {
+                "number": 42,
+                "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
+            },  # After first prepare
+            {
+                "number": 42,
+                "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
+            },  # In loop (check state)
+        ]
+        call_count = {"value": 0}
+
+        def mock_get_pr(*_args, **_kwargs):
+            result = pr_responses[min(call_count["value"], len(pr_responses) - 1)]
+            call_count["value"] += 1
+            return result
+
+        with (
+            patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr),
+            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.time.sleep") as mock_sleep,
+        ):
+            workflow.execute(workflow_context, mock_config)
+
+        # Only one prepare call needed
+        prepare_calls = [
+            c for c in mock_run.call_args_list if "/kiln-prepare_implementation_github" in c[0][0]
+        ]
+        assert len(prepare_calls) == 1
+
+        # Only one delay (first attempt) - 10 * 1 = 10
+        mock_sleep.assert_called_once_with(10)
 
     def test_execute_retries_pr_lookup_on_network_error(self, workflow_context):
         """Test that execute() retries PR lookup on transient network errors."""

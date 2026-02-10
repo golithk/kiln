@@ -114,6 +114,7 @@ class Config:
         workspace_dir: Directory for workspace files
         watched_statuses: List of project statuses to monitor for changes
         max_concurrent_workflows: Maximum number of workflows to run in parallel
+        prepare_pr_delay: Base delay in seconds before checking for PR after creation
     """
 
     github_token: str | None = None
@@ -149,6 +150,7 @@ class Config:
     mcp_fail_on_error: bool = (
         False  # When True, daemon fails to start if any MCP server is unreachable
     )
+    prepare_pr_delay: int = 10  # Delay in seconds before checking for PR after creation
 
 
 def determine_workspace_dir() -> str:
@@ -409,6 +411,9 @@ def load_config_from_file(config_path: Path) -> Config:
     # MCP fail-on-error setting
     mcp_fail_on_error = data.get("MCP_FAIL_ON_ERROR", "false").lower() == "true"
 
+    # PR creation retry delay
+    prepare_pr_delay = int(data.get("PREPARE_PR_DELAY", "10"))
+
     return Config(
         github_token=github_token,
         github_enterprise_host=github_enterprise_host,
@@ -438,6 +443,7 @@ def load_config_from_file(config_path: Path) -> Config:
         azure_password=azure_password,
         azure_scope=azure_scope,
         mcp_fail_on_error=mcp_fail_on_error,
+        prepare_pr_delay=prepare_pr_delay,
     )
 
 
@@ -603,6 +609,9 @@ def load_config_from_env() -> Config:
     # MCP fail-on-error setting
     mcp_fail_on_error = os.environ.get("MCP_FAIL_ON_ERROR", "false").lower() == "true"
 
+    # PR creation retry delay
+    prepare_pr_delay = int(os.environ.get("PREPARE_PR_DELAY", "10"))
+
     return Config(
         github_token=github_token,
         github_enterprise_host=github_enterprise_host,
@@ -632,6 +641,7 @@ def load_config_from_env() -> Config:
         azure_password=azure_password,
         azure_scope=azure_scope,
         mcp_fail_on_error=mcp_fail_on_error,
+        prepare_pr_delay=prepare_pr_delay,
     )
 
 

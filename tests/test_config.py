@@ -1592,6 +1592,72 @@ class TestAzureOAuthConfiguration:
 
 
 @pytest.mark.unit
+class TestPreparePrDelayConfiguration:
+    """Tests for prepare_pr_delay configuration variable."""
+
+    def _write_config(self, tmp_path, content):
+        """Helper to write a config file."""
+        config_file = tmp_path / "config"
+        config_file.write_text(content)
+        return config_file
+
+    def test_prepare_pr_delay_default_env(self, monkeypatch):
+        """Test prepare_pr_delay defaults to 10 when not specified in env."""
+        monkeypatch.setenv("GITHUB_TOKEN", "test_token")
+        monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
+        monkeypatch.setenv("USERNAME_SELF", "testuser")
+        monkeypatch.delenv("PREPARE_PR_DELAY", raising=False)
+
+        config = load_config_from_env()
+
+        assert config.prepare_pr_delay == 10
+        assert isinstance(config.prepare_pr_delay, int)
+
+    def test_prepare_pr_delay_custom_env(self, monkeypatch):
+        """Test prepare_pr_delay can be set via environment variable."""
+        monkeypatch.setenv("GITHUB_TOKEN", "test_token")
+        monkeypatch.setenv("PROJECT_URLS", "https://github.com/orgs/test/projects/1")
+        monkeypatch.setenv("USERNAME_SELF", "testuser")
+        monkeypatch.setenv("PREPARE_PR_DELAY", "20")
+
+        config = load_config_from_env()
+
+        assert config.prepare_pr_delay == 20
+        assert isinstance(config.prepare_pr_delay, int)
+
+    def test_prepare_pr_delay_default_file(self, tmp_path, monkeypatch):
+        """Test prepare_pr_delay defaults to 10 when not specified in file."""
+        config_file = self._write_config(
+            tmp_path,
+            "GITHUB_TOKEN=ghp_test\n"
+            "PROJECT_URLS=https://github.com/orgs/test/projects/1\n"
+            "USERNAME_SELF=testuser",
+        )
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        config = load_config_from_file(config_file)
+
+        assert config.prepare_pr_delay == 10
+        assert isinstance(config.prepare_pr_delay, int)
+
+    def test_prepare_pr_delay_custom_file(self, tmp_path, monkeypatch):
+        """Test prepare_pr_delay can be set via config file."""
+        config_file = self._write_config(
+            tmp_path,
+            "GITHUB_TOKEN=ghp_test\n"
+            "PROJECT_URLS=https://github.com/orgs/test/projects/1\n"
+            "USERNAME_SELF=testuser\n"
+            "PREPARE_PR_DELAY=30",
+        )
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+        config = load_config_from_file(config_file)
+
+        assert config.prepare_pr_delay == 30
+        assert isinstance(config.prepare_pr_delay, int)
+
+
+@pytest.mark.unit
 class TestDetermineWorkspaceDir:
     """Tests for determine_workspace_dir() auto-detection logic."""
 
