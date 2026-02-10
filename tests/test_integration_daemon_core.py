@@ -595,3 +595,320 @@ class TestDaemonStaleCommentCleanup:
             (comment_id,),
         )
         assert cursor.fetchone() is not None
+
+
+@pytest.mark.integration
+class TestMaybeCleanupClosedWorkflowGuard:
+    """Tests for race condition guard in _maybe_cleanup_closed().
+
+    These tests verify that cleanup is skipped when a workflow is in progress
+    for an issue, preventing the race condition where cleanup could delete
+    a worktree while an implement workflow is still running.
+    """
+
+    @pytest.fixture
+    def daemon(self, temp_workspace_dir):
+        """Fixture providing Daemon with mocked dependencies."""
+        config = MagicMock()
+        config.poll_interval = 60
+        config.watched_statuses = ["Research", "Plan", "Implement"]
+        config.max_concurrent_workflows = 2
+        config.database_path = f"{temp_workspace_dir}/test.db"
+        config.workspace_dir = temp_workspace_dir
+        config.project_urls = ["https://github.com/orgs/test/projects/1"]
+        config.github_enterprise_version = None
+
+        with patch("src.ticket_clients.github.GitHubTicketClient"):
+            daemon = Daemon(config)
+            daemon.ticket_client = MagicMock()
+            daemon.comment_processor.ticket_client = daemon.ticket_client
+            yield daemon
+            daemon.stop()
+
+    def test_skips_cleanup_when_workflow_in_progress(self, daemon):
+        """Verify cleanup is skipped when workflow is running for the issue."""
+        import time
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_test123",
+            repo="github.com/test-org/test-repo",
+            ticket_id=42,
+            status="Done",
+            title="Test Issue",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),  # No 'cleaned_up' label
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Simulate workflow in progress
+        with daemon._in_progress_lock:
+            daemon._in_progress[key] = time.time()
+
+        # Mock workspace_manager to verify cleanup is NOT called
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup_closed(item)
+
+        # Cleanup should NOT have been called
+        daemon.workspace_manager.cleanup_workspace.assert_not_called()
+        # add_label should NOT have been called (we returned early)
+        daemon.ticket_client.add_label.assert_not_called()
+
+    def test_proceeds_with_cleanup_when_no_workflow_running(self, daemon, temp_workspace_dir):
+        """Verify cleanup proceeds when no workflow is running for the issue."""
+        from pathlib import Path
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_test456",
+            repo="github.com/test-org/test-repo",
+            ticket_id=99,
+            status="Done",
+            title="Test Issue Cleanup",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),  # No 'cleaned_up' label
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Ensure no workflow is in progress
+        assert key not in daemon._in_progress
+
+        # Create the worktree path so cleanup attempts to clean it
+        worktree_path = daemon._get_worktree_path(item.repo, item.ticket_id)
+        Path(worktree_path).mkdir(parents=True, exist_ok=True)
+
+        # Mock cleanup_workspace to track calls
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup_closed(item)
+
+        # Cleanup should have been called
+        daemon.workspace_manager.cleanup_workspace.assert_called_once_with(
+            item.repo, item.ticket_id
+        )
+        # add_label should have been called to mark as cleaned up
+        from src.labels import Labels
+
+        daemon.ticket_client.add_label.assert_called_once_with(
+            item.repo, item.ticket_id, Labels.CLEANED_UP
+        )
+
+    def test_skips_cleanup_logs_debug_message(self, daemon, caplog):
+        """Verify debug log message is emitted when skipping cleanup."""
+        import logging
+        import time
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_test789",
+            repo="github.com/test-org/test-repo",
+            ticket_id=123,
+            status="Done",
+            title="Test Issue Log",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Simulate workflow in progress
+        with daemon._in_progress_lock:
+            daemon._in_progress[key] = time.time()
+
+        # Enable debug logging to capture the message
+        with caplog.at_level(logging.DEBUG):
+            daemon._maybe_cleanup_closed(item)
+
+        # Verify debug message was logged
+        assert any(
+            "Skipping cleanup" in record.message and key in record.message
+            for record in caplog.records
+        ), f"Expected 'Skipping cleanup' debug message for {key}"
+
+    def test_cleanup_skipped_for_open_issues(self, daemon):
+        """Verify cleanup does not proceed for OPEN issues (baseline behavior)."""
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_test_open",
+            repo="github.com/test-org/test-repo",
+            ticket_id=200,
+            status="Implement",
+            title="Open Issue",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="OPEN",  # Not closed
+            labels=set(),
+        )
+
+        # Mock workspace_manager to verify cleanup is NOT called
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup_closed(item)
+
+        # Cleanup should NOT have been called (issue is not closed)
+        daemon.workspace_manager.cleanup_workspace.assert_not_called()
+        daemon.ticket_client.add_label.assert_not_called()
+
+    def test_cleanup_skipped_for_already_cleaned_up_issues(self, daemon):
+        """Verify cleanup does not proceed for already cleaned up issues."""
+        from src.interfaces import TicketItem
+        from src.labels import Labels
+
+        item = TicketItem(
+            item_id="PVTI_test_cleaned",
+            repo="github.com/test-org/test-repo",
+            ticket_id=300,
+            status="Done",
+            title="Already Cleaned Issue",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels={Labels.CLEANED_UP},  # Already has cleaned_up label
+        )
+
+        # Mock workspace_manager to verify cleanup is NOT called
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup_closed(item)
+
+        # Cleanup should NOT have been called (already cleaned up)
+        daemon.workspace_manager.cleanup_workspace.assert_not_called()
+        daemon.ticket_client.add_label.assert_not_called()
+
+
+class TestMaybeCleanupWorkflowGuard:
+    """Tests for race condition guard in _maybe_cleanup() (Done status cleanup).
+
+    These tests verify that cleanup is skipped when a workflow is in progress
+    for an issue in Done status, providing defense in depth for the race condition.
+    """
+
+    @pytest.fixture
+    def daemon(self, temp_workspace_dir):
+        """Fixture providing Daemon with mocked dependencies."""
+        config = MagicMock()
+        config.poll_interval = 60
+        config.watched_statuses = ["Research", "Plan", "Implement"]
+        config.max_concurrent_workflows = 2
+        config.database_path = f"{temp_workspace_dir}/test.db"
+        config.workspace_dir = temp_workspace_dir
+        config.project_urls = ["https://github.com/orgs/test/projects/1"]
+        config.github_enterprise_version = None
+
+        with patch("src.ticket_clients.github.GitHubTicketClient"):
+            daemon = Daemon(config)
+            daemon.ticket_client = MagicMock()
+            daemon.comment_processor.ticket_client = daemon.ticket_client
+            yield daemon
+            daemon.stop()
+
+    def test_skips_cleanup_when_workflow_in_progress(self, daemon):
+        """Verify cleanup is skipped when workflow is running for the issue."""
+        import time
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_done_test123",
+            repo="github.com/test-org/test-repo",
+            ticket_id=42,
+            status="Done",
+            title="Test Done Issue",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),  # No 'cleaned_up' label
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Simulate workflow in progress
+        with daemon._in_progress_lock:
+            daemon._in_progress[key] = time.time()
+
+        # Mock workspace_manager to verify cleanup is NOT called
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup(item)
+
+        # Cleanup should NOT have been called
+        daemon.workspace_manager.cleanup_workspace.assert_not_called()
+        # add_label should NOT have been called (we returned early)
+        daemon.ticket_client.add_label.assert_not_called()
+
+    def test_proceeds_with_cleanup_when_no_workflow_running(self, daemon, temp_workspace_dir):
+        """Verify cleanup proceeds when no workflow is running for the issue."""
+        from pathlib import Path
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_done_test456",
+            repo="github.com/test-org/test-repo",
+            ticket_id=99,
+            status="Done",
+            title="Test Done Issue Cleanup",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),  # No 'cleaned_up' label
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Ensure no workflow is in progress
+        assert key not in daemon._in_progress
+
+        # Create the worktree path so cleanup attempts to clean it
+        worktree_path = daemon._get_worktree_path(item.repo, item.ticket_id)
+        Path(worktree_path).mkdir(parents=True, exist_ok=True)
+
+        # Mock cleanup_workspace to track calls
+        daemon.workspace_manager.cleanup_workspace = MagicMock()
+
+        daemon._maybe_cleanup(item)
+
+        # Cleanup should have been called
+        daemon.workspace_manager.cleanup_workspace.assert_called_once_with(
+            item.repo, item.ticket_id
+        )
+        # add_label should have been called to mark as cleaned up
+        from src.labels import Labels
+
+        daemon.ticket_client.add_label.assert_called_once_with(
+            item.repo, item.ticket_id, Labels.CLEANED_UP
+        )
+
+    def test_skips_cleanup_logs_debug_message(self, daemon, caplog):
+        """Verify debug log message is emitted when skipping cleanup."""
+        import logging
+        import time
+
+        from src.interfaces import TicketItem
+
+        item = TicketItem(
+            item_id="PVTI_done_test789",
+            repo="github.com/test-org/test-repo",
+            ticket_id=123,
+            status="Done",
+            title="Test Done Issue Log",
+            board_url="https://github.com/orgs/test/projects/1",
+            state="CLOSED",
+            labels=set(),
+        )
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Simulate workflow in progress
+        with daemon._in_progress_lock:
+            daemon._in_progress[key] = time.time()
+
+        # Enable debug logging to capture the message
+        with caplog.at_level(logging.DEBUG):
+            daemon._maybe_cleanup(item)
+
+        # Verify debug message was logged
+        assert any(
+            "Skipping cleanup" in record.message and key in record.message
+            for record in caplog.records
+        ), f"Expected 'Skipping cleanup' debug message for {key}"

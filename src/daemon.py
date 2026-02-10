@@ -1498,6 +1498,13 @@ class Daemon:
         Args:
             item: TicketItem in Done status (with cached labels)
         """
+        # Skip cleanup if workflow is currently running (race condition guard)
+        key = f"{item.repo}#{item.ticket_id}"
+        with self._in_progress_lock:
+            if key in self._in_progress:
+                logger.debug(f"Skipping cleanup for {key} - workflow in progress")
+                return
+
         # Skip if already cleaned up - use cached labels
         if Labels.CLEANED_UP in item.labels:
             return
@@ -1563,6 +1570,13 @@ class Daemon:
         Args:
             item: TicketItem to check (with cached labels and state)
         """
+        # Skip cleanup if workflow is currently running (race condition guard)
+        key = f"{item.repo}#{item.ticket_id}"
+        with self._in_progress_lock:
+            if key in self._in_progress:
+                logger.debug(f"Skipping cleanup for {key} - workflow in progress")
+                return
+
         # Only process closed issues
         if item.state != "CLOSED":
             return
