@@ -211,15 +211,23 @@ class ImplementWorkflow:
         )
 
         if not pr_info:
-            for attempt in range(1, 3):  # Try up to 2 times
+            # Delay multipliers for exponential backoff: 1x, 3x, 9x
+            delay_multipliers = [1, 3, 9]
+
+            for attempt in range(1, 4):  # Try up to 3 times
                 logger.info(
                     f"No PR found for {key}, creating via /prepare_implementation_github "
-                    f"(attempt {attempt}/2)"
+                    f"(attempt {attempt}/3)"
                 )
                 # Pass --base flag when parent_branch is set (from feature_branch or parent issue)
                 base_flag = f" --base {ctx.parent_branch}" if ctx.parent_branch else ""
                 prepare_prompt = f"/kiln-prepare_implementation_github {issue_url}{base_flag}"
                 self._run_prompt(prepare_prompt, ctx, config, "prepare_implementation")
+
+                # Wait for GitHub API to propagate the PR before checking
+                delay = config.prepare_pr_delay * delay_multipliers[attempt - 1]
+                logger.info(f"Waiting {delay}s for GitHub API propagation before PR lookup...")
+                time.sleep(delay)
 
                 # Check for PR
                 pr_info = self._get_pr_for_issue(ctx.repo, ctx.issue_number)
@@ -231,9 +239,9 @@ class ImplementWorkflow:
                     break
 
             if not pr_info:
-                # Failed after 2 attempts - this will be caught by daemon to add failed label
+                # Failed after 3 attempts - this will be caught by daemon to add failed label
                 raise RuntimeError(
-                    f"Failed to create PR for {issue_url} after 2 attempts. "
+                    f"Failed to create PR for {issue_url} after 3 attempts. "
                     "Check /prepare_implementation_github output."
                 )
 
