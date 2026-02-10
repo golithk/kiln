@@ -34,8 +34,8 @@ jobs:
 
       - name: Send Slack notifications
         env:
-          WEBHOOK_1: ${{ secrets.SLACK_WEBHOOK_1 }}
-          WEBHOOK_2: ${{ secrets.SLACK_WEBHOOK_2 }}
+          WEBHOOK_1: ${{ secrets.SLACK_WEBHOOK_URL_1 }}
+          WEBHOOK_2: ${{ secrets.SLACK_WEBHOOK_URL_2 }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.tag || github.event.release.tag_name }}
           RELEASE_URL: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.url || github.event.release.html_url }}
           RELEASE_BODY: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.body || github.event.release.body }}
@@ -79,7 +79,7 @@ jobs:
           done
 
           if [ $webhook_sent -eq 0 ]; then
-            echo "No webhook URLs configured (set SLACK_WEBHOOK_1, SLACK_WEBHOOK_2)"
+            echo "No webhook URLs configured (set SLACK_WEBHOOK_URL_1, SLACK_WEBHOOK_URL_2)"
           else
             echo "Sent notifications to $webhook_sent webhook(s)"
           fi
