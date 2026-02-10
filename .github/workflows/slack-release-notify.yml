@@ -60,19 +60,26 @@ jobs:
             text=$(echo "$text" | sed -E 's/(^|[^|<])@([a-zA-Z0-9_-]+)/\1<https:\/\/github.com\/\2|@\2>/g')
             # Link #issue references to GitHub issues (skip if inside URLs or Slack links)
             text=$(echo "$text" | sed -E 's/(^|[^|<\/])#([0-9]+)/\1<'"${REPO_URL//\//\\/}"'\/issues\/\2|#\2>/g')
+            # Convert "**Full Changelog**: URL" to a proper Slack link
+            text=$(echo "$text" | sed -E 's/\*Full Changelog\*: (https?:\/\/[^ ]+)/<\1|Full Changelog>/')
             echo "$text"
           }
 
-          # Prepare release notes
+          # Prepare release notes (use printf for real newlines so jq encodes them correctly)
           if [ -n "$RELEASE_BODY" ]; then
             FORMATTED_BODY=$(convert_to_mrkdwn "$RELEASE_BODY")
-            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n${FORMATTED_BODY}\n\n<${RELEASE_URL}|View Release on GitHub>"
+            MESSAGE=$(printf '%s\n\n%s\n\n%s' \
+              "🚀 *Kiln ${RELEASE_TAG}* has been released!" \
+              "$FORMATTED_BODY" \
+              "<${RELEASE_URL}|View Release on GitHub>")
           else
-            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n<${RELEASE_URL}|View Release on GitHub>"
+            MESSAGE=$(printf '%s\n\n%s' \
+              "🚀 *Kiln ${RELEASE_TAG}* has been released!" \
+              "<${RELEASE_URL}|View Release on GitHub>")
           fi
 
           # Escape JSON special characters
-          MESSAGE=$(echo "$MESSAGE" | jq -Rs .)
+          MESSAGE=$(printf '%s' "$MESSAGE" | jq -Rs .)
 
           # Loop through webhook secrets and send to each
           webhook_sent=0
