@@ -161,11 +161,311 @@ def count_checkboxes(markdown_text: str) -> tuple[int, int]:
     return checked + unchecked, checked
 
 
+# Plan extraction markers (matching comment_processor.py)
+PLAN_START_MARKER = "<!-- kiln:plan -->"
+PLAN_END_MARKER = "<!-- /kiln:plan -->"
+PLAN_LEGACY_END_MARKER = "<!-- /kiln -->"
+
+
+def extract_plan_from_body(body: str) -> str | None:
+    """Extract plan content from issue body between markers.
+
+    Looks for content between <!-- kiln:plan --> and <!-- /kiln:plan --> markers.
+    Falls back to legacy <!-- /kiln --> end marker if new marker not found.
+
+    Args:
+        body: Issue body content to parse
+
+    Returns:
+        Plan content (without markers) or None if not found.
+    """
+    start_idx = body.find(PLAN_START_MARKER)
+    if start_idx == -1:
+        return None
+
+    content_start = start_idx + len(PLAN_START_MARKER)
+
+    # Try new end marker first, then legacy
+    end_idx = body.find(PLAN_END_MARKER, content_start)
+    if end_idx == -1:
+        end_idx = body.find(PLAN_LEGACY_END_MARKER, content_start)
+
+    if end_idx == -1:
+        # No end marker, take everything after start
+        return body[content_start:].strip()
+
+    return body[content_start:end_idx].strip()
+
+
+def extract_plan_from_issue(repo: str, issue_number: int) -> tuple[str | None, str]:
+    """Fetch issue and extract plan content.
+
+    Uses gh CLI to fetch the issue body and title, then extracts plan content.
+
+    Args:
+        repo: Repository in 'hostname/owner/repo' format (e.g., 'github.com/owner/repo')
+        issue_number: Issue number
+
+    Returns:
+        Tuple of (plan_content, issue_title) where plan_content is None if not found.
+
+    Raises:
+        RuntimeError: If issue cannot be fetched
+    """
+    issue_url = f"https://{repo}/issues/{issue_number}"
+
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", issue_url, "--json", "body,title"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        body = data.get("body", "") or ""
+        title = data.get("title", "") or ""
+
+        plan_content = extract_plan_from_body(body)
+        return plan_content, title
+
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to fetch issue {issue_url}: {e.stderr}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse issue response for {issue_url}: {e}") from e
+
+
+def collapse_plan_in_issue(repo: str, issue_number: int) -> None:
+    """Collapse the plan section in the issue description.
+
+    Wraps the plan in <details> tags to reduce visual clutter after PR creation.
+    This is idempotent - if the plan is already collapsed, it does nothing.
+
+    Args:
+        repo: Repository in 'hostname/owner/repo' format (e.g., 'github.com/owner/repo')
+        issue_number: Issue number
+
+    Raises:
+        RuntimeError: If issue cannot be fetched or updated
+    """
+    issue_url = f"https://{repo}/issues/{issue_number}"
+
+    # Fetch current body
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", issue_url, "--json", "body"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        data = json.loads(result.stdout)
+        body = data.get("body", "") or ""
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to fetch issue {issue_url}: {e.stderr}") from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Failed to parse issue response for {issue_url}: {e}") from e
+
+    # Check if plan section exists
+    start_idx = body.find(PLAN_START_MARKER)
+    if start_idx == -1:
+        # No plan to collapse
+        return
+
+    # Check if already collapsed (details tag before the plan marker)
+    # Look for <details> tag that precedes and wraps the plan
+    details_before_plan = body.rfind("<details>", 0, start_idx)
+    if details_before_plan != -1:
+        # Check if there's a </details> after the plan - if so, it's already collapsed
+        plan_end_idx = body.find(PLAN_END_MARKER, start_idx)
+        if plan_end_idx == -1:
+            plan_end_idx = body.find(PLAN_LEGACY_END_MARKER, start_idx)
+        if plan_end_idx != -1:
+            closing_details = body.find("</details>", plan_end_idx)
+            if closing_details != -1:
+                # Already collapsed, skip
+                return
+
+    # Find the end marker
+    end_idx = body.find(PLAN_END_MARKER, start_idx)
+    end_marker_len = len(PLAN_END_MARKER)
+    if end_idx == -1:
+        end_idx = body.find(PLAN_LEGACY_END_MARKER, start_idx)
+        end_marker_len = len(PLAN_LEGACY_END_MARKER)
+    if end_idx == -1:
+        # No end marker found, can't safely collapse
+        return
+
+    # Calculate the end position (after the end marker)
+    plan_section_end = end_idx + end_marker_len
+
+    # Find the separator (---) before the plan section
+    sep_idx = body.rfind("---", 0, start_idx)
+
+    # Extract the plan section (including markers)
+    plan_section = body[start_idx:plan_section_end]
+
+    # Build collapsed version
+    collapsed = (
+        "<details>\n"
+        "<summary><h2>Implementation Plan</h2></summary>\n\n"
+        f"{plan_section}\n\n"
+        "</details>"
+    )
+
+    # Build new body
+    if sep_idx != -1:
+        # Include the separator in the collapsed section
+        new_body = body[:sep_idx] + "\n---\n\n" + collapsed + body[plan_section_end:]
+    else:
+        new_body = body[:start_idx] + collapsed + body[plan_section_end:]
+
+    # Update issue
+    # Parse repo to get proper format for gh CLI
+    # repo is in format "hostname/owner/repo" (e.g., "github.com/owner/repo")
+    parts = repo.split("/", 1)
+    if len(parts) == 2:
+        hostname, owner_repo = parts
+    else:
+        hostname, owner_repo = "github.com", repo
+
+    # For github.com, use just owner/repo; for enterprise, use full path
+    repo_ref = owner_repo if hostname == "github.com" else f"{hostname}/{owner_repo}"
+
+    try:
+        subprocess.run(
+            ["gh", "issue", "edit", str(issue_number), "--repo", repo_ref, "--body", new_body],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        logger.info(f"Collapsed plan section in issue #{issue_number}")
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to update issue #{issue_number}: {e.stderr}") from e
+
+
+def create_draft_pr(
+    workspace_path: str,
+    repo: str,
+    issue_number: int,
+    title: str,
+    plan_body: str,
+    base_branch: str | None = None,
+) -> int:
+    """Create a draft PR with the given plan content.
+
+    Creates an empty commit, pushes to remote, and creates a draft PR linking to the issue.
+    Uses retry logic for network errors on the gh pr create command.
+
+    Args:
+        workspace_path: Path to git worktree
+        repo: Repository in 'hostname/owner/repo' format (e.g., 'github.com/owner/repo')
+        issue_number: Issue number this PR closes
+        title: PR title (from issue title)
+        plan_body: Plan content to use as PR body
+        base_branch: Optional base branch for the PR (for child issues)
+
+    Returns:
+        PR number
+
+    Raises:
+        RuntimeError: If PR creation fails after retries
+    """
+    # Build PR body with Closes keyword
+    if base_branch:
+        pr_body = (
+            f"Closes #{issue_number}\n\n"
+            f"> **Note**: This PR targets the branch `{base_branch}`, not the default branch.\n\n"
+            f"{plan_body}\n\n---\n\n"
+            "*This PR uses iterative implementation. Tasks are completed one at a time.*"
+        )
+    else:
+        pr_body = (
+            f"Closes #{issue_number}\n\n"
+            f"{plan_body}\n\n---\n\n"
+            "*This PR uses iterative implementation. Tasks are completed one at a time.*"
+        )
+
+    # 1. Create empty commit
+    try:
+        subprocess.run(
+            [
+                "git",
+                "commit",
+                "--allow-empty",
+                "-m",
+                f"feat: begin implementation for #{issue_number}",
+            ],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to create empty commit: {e.stderr}") from e
+
+    # 2. Push to remote
+    try:
+        subprocess.run(
+            ["git", "push", "-u", "origin", "HEAD"],
+            cwd=workspace_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to push to remote: {e.stderr}") from e
+
+    # 3. Create draft PR with retry logic for network errors
+    repo_ref = f"https://{repo}"
+    cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--draft",
+        "--repo",
+        repo_ref,
+        "--title",
+        f"feat: {title}",
+        "--body",
+        pr_body,
+    ]
+    if base_branch:
+        cmd.extend(["--base", base_branch])
+
+    def create_pr() -> str:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            error_output = (e.stderr or "").lower()
+            if any(pattern in error_output for pattern in NETWORK_ERROR_PATTERNS):
+                raise NetworkError(f"Network error creating PR: {e.stderr}") from e
+            raise RuntimeError(f"Failed to create draft PR: {e.stderr}") from e
+
+    try:
+        pr_url = _retry_with_backoff(
+            create_pr,
+            max_attempts=3,
+            description=f"Create draft PR for issue #{issue_number}",
+        )
+    except NetworkError as e:
+        raise RuntimeError(
+            f"Failed to create draft PR for issue #{issue_number} after retries: {e}"
+        ) from e
+
+    # Parse PR number from URL output (e.g., "https://github.com/owner/repo/pull/123")
+    try:
+        pr_number = int(pr_url.rstrip("/").split("/")[-1])
+    except (ValueError, IndexError) as e:
+        raise RuntimeError(f"Failed to parse PR number from URL: {pr_url}") from e
+
+    return pr_number
+
+
 class ImplementWorkflow:
     """Workflow for implementing the planned changes.
 
     This workflow:
-    1. Creates a draft PR if one doesn't exist (via /prepare_implementation_github)
+    1. Creates a draft PR if one doesn't exist (programmatically via create_draft_pr())
     2. Loops through tasks, implementing one per iteration (via /implement_github)
     3. Stops when all tasks complete, no progress detected, or TASK growth exceeds safety limit
     """
@@ -211,38 +511,93 @@ class ImplementWorkflow:
         )
 
         if not pr_info:
-            # Delay multipliers for exponential backoff: 1x, 3x, 9x
-            delay_multipliers = [1, 3, 9]
+            logger.info(f"No PR found for {key}, creating programmatically")
 
-            for attempt in range(1, 4):  # Try up to 3 times
-                logger.info(
-                    f"No PR found for {key}, creating via /prepare_implementation_github "
-                    f"(attempt {attempt}/3)"
+            # Extract plan from issue
+            plan_content, issue_title = extract_plan_from_issue(ctx.repo, ctx.issue_number)
+
+            if plan_content is None:
+                # No plan in issue - direct-to-implement flow
+                # Post explanatory comment
+                parts = ctx.repo.split("/", 1)
+                if len(parts) == 2:
+                    hostname, owner_repo = parts
+                else:
+                    hostname, owner_repo = "github.com", ctx.repo
+                repo_ref = owner_repo if hostname == "github.com" else f"{hostname}/{owner_repo}"
+
+                comment_body = (
+                    "This issue was moved to 'Implement' status without an implementation plan. "
+                    "Automatically triggering planning phase to generate checkboxes for tracking progress."
                 )
-                # Pass --base flag when parent_branch is set (from feature_branch or parent issue)
-                base_flag = f" --base {ctx.parent_branch}" if ctx.parent_branch else ""
-                prepare_prompt = f"/kiln-prepare_implementation_github {issue_url}{base_flag}"
-                self._run_prompt(prepare_prompt, ctx, config, "prepare_implementation")
+                try:
+                    subprocess.run(
+                        [
+                            "gh",
+                            "issue",
+                            "comment",
+                            str(ctx.issue_number),
+                            "--repo",
+                            repo_ref,
+                            "--body",
+                            comment_body,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    logger.warning(f"Failed to post comment for {key}: {e.stderr}")
 
-                # Wait for GitHub API to propagate the PR before checking
+                # Run simplified planning phase first
+                logger.info(f"No plan found in issue {key}, running /kiln-create_plan_simple")
+                simple_plan_prompt = f"/kiln-create_plan_simple {issue_url}"
+                self._run_prompt(simple_plan_prompt, ctx, config, "create_plan_simple")
+                # Re-extract after plan creation
+                plan_content, issue_title = extract_plan_from_issue(ctx.repo, ctx.issue_number)
+                if plan_content is None:
+                    raise RuntimeError(f"Failed to create plan for {issue_url}")
+
+            # Validate plan has checkboxes
+            total_checkboxes, _ = count_checkboxes(plan_content)
+            if total_checkboxes == 0:
+                raise RuntimeError(f"Plan for {issue_url} contains no checkboxes")
+
+            # Create draft PR programmatically (has internal retries for network errors)
+            pr_number = create_draft_pr(
+                ctx.workspace_path,
+                ctx.repo,
+                ctx.issue_number,
+                issue_title,
+                plan_content,
+                ctx.parent_branch,
+            )
+
+            # Collapse plan in issue (best effort)
+            try:
+                collapse_plan_in_issue(ctx.repo, ctx.issue_number)
+            except RuntimeError as e:
+                logger.warning(f"Failed to collapse plan in issue {key}: {e}")
+
+            # Wait for GitHub API propagation, then look up PR with retries.
+            # PR creation succeeded above, so only the lookup needs retrying.
+            delay_multipliers = [1, 3, 9]
+            for attempt in range(1, 4):
                 delay = config.prepare_pr_delay * delay_multipliers[attempt - 1]
                 logger.info(f"Waiting {delay}s for GitHub API propagation before PR lookup...")
                 time.sleep(delay)
 
-                # Check for PR
                 pr_info = self._get_pr_for_issue(ctx.repo, ctx.issue_number)
                 if pr_info:
-                    pr_number = pr_info["number"]
                     pr_url = f"https://{ctx.repo}/pull/{pr_number}"
                     send_implementation_beginning_notification(pr_url, pr_number)
                     logger.info(f"PR created for {key}: #{pr_number}")
                     break
 
             if not pr_info:
-                # Failed after 3 attempts - this will be caught by daemon to add failed label
                 raise RuntimeError(
-                    f"Failed to create PR for {issue_url} after 3 attempts. "
-                    "Check /prepare_implementation_github output."
+                    f"PR #{pr_number} was created for {issue_url} but could not be found "
+                    f"via search after 3 lookup attempts."
                 )
 
         # Step 2: Implementation loop
@@ -358,11 +713,11 @@ class ImplementWorkflow:
         if pr_info:
             pr_body = pr_info.get("body", "")
             total_tasks, completed_tasks = count_checkboxes(pr_body)
-            pr_number = pr_info.get("number")
-            if total_tasks > 0 and completed_tasks == total_tasks and pr_number:
-                self._mark_pr_ready(ctx.repo, pr_number)
-                pr_url = f"https://{ctx.repo}/pull/{pr_number}"
-                send_ready_for_validation_notification(pr_url, pr_number)
+            final_pr_number = pr_info.get("number")
+            if total_tasks > 0 and completed_tasks == total_tasks and final_pr_number:
+                self._mark_pr_ready(ctx.repo, final_pr_number)
+                pr_url = f"https://{ctx.repo}/pull/{final_pr_number}"
+                send_ready_for_validation_notification(pr_url, final_pr_number)
             elif iteration >= max_iterations_estimate:
                 # Hit max iterations without completing all tasks
                 logger.warning(f"Hit max iterations ({max_iterations_estimate}) for {key}")
