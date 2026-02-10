@@ -1,0 +1,63 @@
+name: Slack Release Notification (Multi-Target)
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  notify-slack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack notifications
+        env:
+          WEBHOOK_1: ${{ secrets.SLACK_WEBHOOK_1 }}
+          WEBHOOK_2: ${{ secrets.SLACK_WEBHOOK_2 }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          # Convert markdown to Slack mrkdwn format
+          convert_to_mrkdwn() {
+            local text="$1"
+            # Convert [text](url) to <url|text>
+            text=$(echo "$text" | sed -E 's/\[([^]]+)\]\(([^)]+)\)/<\2|\1>/g')
+            # Convert **bold** to *bold*
+            text=$(echo "$text" | sed -E 's/\*\*([^*]+)\*\*/\*\1\*/g')
+            # Convert *italic* to _italic_ (but not if it's already bold marker)
+            text=$(echo "$text" | sed -E 's/([^*])\*([^*]+)\*([^*])/\1_\2_\3/g')
+            echo "$text"
+          }
+
+          # Prepare release notes
+          if [ -n "$RELEASE_BODY" ]; then
+            FORMATTED_BODY=$(convert_to_mrkdwn "$RELEASE_BODY")
+            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n${FORMATTED_BODY}\n\n<${RELEASE_URL}|View Release on GitHub>"
+          else
+            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n<${RELEASE_URL}|View Release on GitHub>"
+          fi
+
+          # Escape JSON special characters
+          MESSAGE=$(echo "$MESSAGE" | jq -Rs .)
+
+          # Loop through webhook secrets and send to each
+          webhook_sent=0
+          for i in {1..2}; do
+            webhook_var="WEBHOOK_${i}"
+            webhook_url="${!webhook_var}"
+
+            if [ -n "$webhook_url" ]; then
+              echo "Sending notification to webhook $i..."
+              curl -sf -X POST "$webhook_url" \
+                -H 'Content-type: application/json' \
+                --data "{\"text\": ${MESSAGE}}" || echo "Warning: Failed to send to webhook $i"
+              webhook_sent=$((webhook_sent + 1))
+            fi
+          done
+
+          if [ $webhook_sent -eq 0 ]; then
+            echo "No webhook URLs configured (set SLACK_WEBHOOK_1, SLACK_WEBHOOK_2)"
+          else
+            echo "Sent notifications to $webhook_sent webhook(s)"
+          fi
