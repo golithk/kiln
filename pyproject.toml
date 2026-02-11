@@ -46,6 +46,7 @@ dev = [
     "mutmut>=3.0.0",
     "hypothesis>=6.100.0",
     "vulture>=2.10",
+    "pytest-xdist>=3.5.0",
 ]
 
 [tool.ruff]
@@ -125,6 +126,7 @@ markers = [
     "unit: marks tests as unit tests",
     "network: marks tests that require actual network access",
     "hypothesis: marks property-based tests using Hypothesis",
+    "timing: marks tests with timing dependencies (run sequentially, not in parallel)",
 ]
 
 [tool.coverage.run]

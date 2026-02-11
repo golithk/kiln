@@ -32,8 +32,11 @@ jobs:
       - name: Check formatting
         run: ruff format --check src/ tests/
 
-      - name: Run tests
-        run: pytest -m "not slow" --tb=short
+      - name: Run tests (parallel)
+        run: pytest -m "not slow and not timing" -n auto --dist loadscope --tb=short
+
+      - name: Run tests (sequential timing-sensitive)
+        run: pytest -m "timing and not slow" --tb=short
 
       - name: Run type checking
         run: mypy
