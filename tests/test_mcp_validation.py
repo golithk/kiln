@@ -6,6 +6,7 @@ These tests verify:
 - Pre-workflow health check sends Slack notifications on failure
 - OAuth token refresh before workflow execution
 - Graceful degradation when MCP fails pre-workflow check
+- Token substitution during validation (issue #304)
 """
 
 import json
@@ -15,6 +16,7 @@ import pytest
 
 from src.daemon import Daemon
 from src.integrations.mcp_client import MCPTestResult
+from src.integrations.mcp_config import MCPConfigManager
 
 
 @pytest.fixture
@@ -415,7 +417,6 @@ class TestPreWorkflowOAuthRefresh:
     def test_refresh_tokens_called_before_workflow(self):
         """Test that refresh_mcp_tokens is called before writing MCP config to worktree."""
         from src.integrations.azure_oauth import AzureOAuthClient
-        from src.integrations.mcp_config import MCPConfigManager
 
         mock_azure_client = MagicMock(spec=AzureOAuthClient)
         mock_azure_client.get_token.return_value = "test-token"
@@ -432,7 +433,6 @@ class TestPreWorkflowOAuthRefresh:
     def test_refresh_tokens_handles_failure(self):
         """Test that refresh_mcp_tokens returns False on failure."""
         from src.integrations.azure_oauth import AzureOAuthClient, AzureTokenRequestError
-        from src.integrations.mcp_config import MCPConfigManager
 
         mock_azure_client = MagicMock(spec=AzureOAuthClient)
         mock_azure_client.get_token.side_effect = AzureTokenRequestError("Auth failed")
@@ -445,8 +445,6 @@ class TestPreWorkflowOAuthRefresh:
 
     def test_refresh_tokens_returns_true_when_no_azure_client(self):
         """Test that refresh_mcp_tokens returns True when no Azure client configured."""
-        from src.integrations.mcp_config import MCPConfigManager
-
         manager = MCPConfigManager(azure_client=None)
 
         result = manager.refresh_mcp_tokens()
@@ -547,5 +545,180 @@ class TestGracefulDegradation:
 
                 # Should still send notification with None as issue_number
                 mock_slack.assert_called_once_with("jenkins", "timeout", None)
+
+            daemon.stop()
+
+
+@pytest.fixture
+def mock_mcp_config_with_token_placeholder(tmp_path):
+    """Create a temporary MCP config with token placeholder."""
+    kiln_dir = tmp_path / ".kiln"
+    kiln_dir.mkdir()
+    mcp_config_path = kiln_dir / "mcp.json"
+
+    config_data = {
+        "mcpServers": {
+            "azure-mcp": {
+                "url": "https://azure.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${AZURE_BEARER_TOKEN}"},
+            },
+        }
+    }
+    mcp_config_path.write_text(json.dumps(config_data))
+
+    # Change to this directory so MCPConfigManager finds the config
+    import os
+
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    yield tmp_path
+    os.chdir(original_cwd)
+
+
+@pytest.mark.unit
+class TestTokenSubstitutionDuringValidation:
+    """Tests for token substitution during MCP validation (issue #304).
+
+    These tests verify that both `_validate_mcp_connections()` (startup validation)
+    and `_check_mcp_health_before_workflow()` use token-substituted configs
+    instead of raw configs with placeholders.
+    """
+
+    def test_startup_validation_uses_substituted_tokens(
+        self, base_config, mock_mcp_config_with_token_placeholder
+    ):
+        """Test that _validate_mcp_connections() uses get_substituted_mcp_servers()."""
+        base_config.mcp_fail_on_error = False
+
+        mock_results = [
+            MCPTestResult(
+                server_name="azure-mcp",
+                success=True,
+                tools=["test_tool"],
+            ),
+        ]
+
+        # Create a mock Azure client that returns a test token
+        mock_azure_client = MagicMock()
+        mock_azure_client.get_token.return_value = "actual-azure-token"
+
+        with (
+            patch("src.ticket_clients.github.GitHubTicketClient"),
+            patch("src.daemon.check_all_mcp_servers", return_value=mock_results) as mock_check,
+            patch("src.daemon.AzureOAuthClient", return_value=mock_azure_client),
+        ):
+            # Set Azure credentials so the client is created
+            base_config.azure_tenant_id = "test-tenant"
+            base_config.azure_client_id = "test-client"
+            base_config.azure_username = "test-user"
+            base_config.azure_password = "test-pass"
+            base_config.azure_scope = "test-scope"
+
+            daemon = Daemon(base_config)
+
+            # Verify check_all_mcp_servers was called with substituted tokens
+            mock_check.assert_called()
+            call_args = mock_check.call_args[0][0]
+
+            # The token placeholder should be substituted with actual token
+            azure_mcp_config = call_args.get("azure-mcp", {})
+            headers = azure_mcp_config.get("headers", {})
+            auth_header = headers.get("Authorization", "")
+
+            assert "actual-azure-token" in auth_header
+            assert "${AZURE_BEARER_TOKEN}" not in auth_header
+
+            daemon.stop()
+
+    def test_pre_workflow_health_check_uses_substituted_tokens(
+        self, base_config, mock_mcp_config_with_token_placeholder
+    ):
+        """Test that _check_mcp_health_before_workflow() uses get_substituted_mcp_servers()."""
+        base_config.mcp_fail_on_error = False
+
+        startup_results = [
+            MCPTestResult(server_name="azure-mcp", success=True, tools=["test_tool"]),
+        ]
+
+        health_check_results = [
+            MCPTestResult(server_name="azure-mcp", success=True, tools=["test_tool"]),
+        ]
+
+        # Create a mock Azure client that returns a test token
+        mock_azure_client = MagicMock()
+        mock_azure_client.get_token.return_value = "workflow-azure-token"
+
+        with (
+            patch("src.ticket_clients.github.GitHubTicketClient"),
+            patch("src.daemon.check_all_mcp_servers", return_value=startup_results),
+            patch("src.daemon.AzureOAuthClient", return_value=mock_azure_client),
+        ):
+            # Set Azure credentials so the client is created
+            base_config.azure_tenant_id = "test-tenant"
+            base_config.azure_client_id = "test-client"
+            base_config.azure_username = "test-user"
+            base_config.azure_password = "test-pass"
+            base_config.azure_scope = "test-scope"
+
+            daemon = Daemon(base_config)
+
+            # Now call health check and verify substitution
+            with patch(
+                "src.daemon.check_all_mcp_servers", return_value=health_check_results
+            ) as mock_check:
+                result = daemon._check_mcp_health_before_workflow(issue_number=42)
+
+                assert result is True
+
+                # Verify check_all_mcp_servers was called with substituted tokens
+                mock_check.assert_called()
+                call_args = mock_check.call_args[0][0]
+
+                # The token placeholder should be substituted with actual token
+                azure_mcp_config = call_args.get("azure-mcp", {})
+                headers = azure_mcp_config.get("headers", {})
+                auth_header = headers.get("Authorization", "")
+
+                assert "workflow-azure-token" in auth_header
+                assert "${AZURE_BEARER_TOKEN}" not in auth_header
+
+            daemon.stop()
+
+    def test_validation_works_without_azure_client(self, base_config, mock_mcp_config):
+        """Test that validation works normally when no Azure client is configured."""
+        base_config.mcp_fail_on_error = False
+
+        mock_results = [
+            MCPTestResult(server_name="jenkins", success=True, tools=["build"]),
+            MCPTestResult(server_name="filesystem", success=True, tools=["read"]),
+        ]
+
+        with (
+            patch("src.ticket_clients.github.GitHubTicketClient"),
+            patch("src.daemon.check_all_mcp_servers", return_value=mock_results) as mock_check,
+        ):
+            daemon = Daemon(base_config)
+
+            # Verify check_all_mcp_servers was called
+            mock_check.assert_called()
+
+            daemon.stop()
+
+    def test_startup_validation_returns_empty_when_no_config(self, base_config):
+        """Test that validation with empty config doesn't call check_all_mcp_servers."""
+        with (
+            patch("src.ticket_clients.github.GitHubTicketClient"),
+            patch("src.daemon.check_all_mcp_servers") as mock_check,
+            patch("src.daemon.MCPConfigManager") as mock_mcp_class,
+        ):
+            mock_mcp_instance = MagicMock()
+            mock_mcp_instance.validate_config.return_value = []
+            mock_mcp_instance.get_substituted_mcp_servers.return_value = {}
+            mock_mcp_class.return_value = mock_mcp_instance
+
+            daemon = Daemon(base_config)
+
+            # check_all_mcp_servers should not be called when no servers exist
+            mock_check.assert_not_called()
 
             daemon.stop()

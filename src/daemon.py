@@ -560,12 +560,8 @@ class Daemon:
         for warning in mcp_warnings:
             logger.warning(f"MCP config warning: {warning}")
 
-        mcp_config = self.mcp_config_manager.load_config()
-        if mcp_config is None:
-            logger.debug("No MCP configuration found")
-            return
-
-        mcp_servers = mcp_config.mcp_servers
+        # Get MCP servers with tokens substituted for validation
+        mcp_servers = self.mcp_config_manager.get_substituted_mcp_servers()
         if len(mcp_servers) == 0:
             logger.debug("No MCP servers configured")
             return
@@ -612,11 +608,8 @@ class Daemon:
             True if all MCP servers are healthy (or no MCP configured),
             False if any server failed health check
         """
-        mcp_config = self.mcp_config_manager.load_config()
-        if mcp_config is None:
-            return True
-
-        mcp_servers = mcp_config.mcp_servers
+        # Get MCP servers with tokens substituted for validation
+        mcp_servers = self.mcp_config_manager.get_substituted_mcp_servers()
         if len(mcp_servers) == 0:
             return True
 

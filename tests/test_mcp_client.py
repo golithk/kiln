@@ -254,6 +254,79 @@ class TestTestHttpServer:
             assert call_kwargs.get("headers") == {"Authorization": "Bearer token123"}
 
     @pytest.mark.asyncio
+    async def test_connection_with_direct_headers(self):
+        """Test that direct headers field is used."""
+        config = {
+            "url": "https://api.example.com/mcp",
+            "headers": {"Authorization": "Bearer direct-token"},
+        }
+
+        # Create mock tools
+        mock_tools_result = MagicMock()
+        mock_tools_result.tools = []
+
+        # Mock the session
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=mock_tools_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock the client context manager
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock(), MagicMock()))
+        mock_client_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "src.integrations.mcp_client.streamablehttp_client", return_value=mock_client_cm
+            ) as mock_http,
+            patch("src.integrations.mcp_client.ClientSession", return_value=mock_session),
+        ):
+            await _test_http_server("direct-headers-server", config, timeout=5.0)
+
+            # Verify headers were passed
+            call_kwargs = mock_http.call_args.kwargs
+            assert call_kwargs.get("headers") == {"Authorization": "Bearer direct-token"}
+
+    @pytest.mark.asyncio
+    async def test_direct_headers_preferred_over_env(self):
+        """Test that headers field takes precedence over env."""
+        config = {
+            "url": "https://api.example.com/mcp",
+            "headers": {"Authorization": "Bearer headers-token"},
+            "env": {"AUTHORIZATION": "Bearer env-token"},
+        }
+
+        # Create mock tools
+        mock_tools_result = MagicMock()
+        mock_tools_result.tools = []
+
+        # Mock the session
+        mock_session = AsyncMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=mock_tools_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        # Mock the client context manager
+        mock_client_cm = AsyncMock()
+        mock_client_cm.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock(), MagicMock()))
+        mock_client_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch(
+                "src.integrations.mcp_client.streamablehttp_client", return_value=mock_client_cm
+            ) as mock_http,
+            patch("src.integrations.mcp_client.ClientSession", return_value=mock_session),
+        ):
+            await _test_http_server("precedence-server", config, timeout=5.0)
+
+            # Verify headers field was used, not env
+            call_kwargs = mock_http.call_args.kwargs
+            assert call_kwargs.get("headers") == {"Authorization": "Bearer headers-token"}
+
+    @pytest.mark.asyncio
     async def test_connection_timeout(self):
         """Test timeout handling for slow HTTP servers."""
         config = {"url": "https://slow.example.com/mcp"}
