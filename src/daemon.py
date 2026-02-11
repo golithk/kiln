@@ -387,6 +387,9 @@ class Daemon:
         # In-memory cache of project metadata (populated on startup)
         self._project_metadata: dict[str, ProjectMetadata] = {}
 
+        # Track project URLs where metadata fetch failed (prevents repeated warning logs)
+        self._archive_metadata_fetch_failed: set[str] = set()
+
         # Validate GitHub connection at startup (fail fast if auth is broken)
         self._validate_github_connections()
 
@@ -1547,7 +1550,39 @@ class Daemon:
         # Get project metadata for the project ID
         metadata = self._project_metadata.get(item.board_url)
         if not metadata or not metadata.project_id:
-            logger.warning(f"No project metadata for {item.board_url}, cannot archive")
+            # Check if we already tried and failed for this project URL
+            if item.board_url in self._archive_metadata_fetch_failed:
+                return  # Silently skip - already logged warning
+
+            # Lazy load: try to fetch metadata on-demand
+            logger.info(f"Project metadata not cached for {item.board_url}, fetching now")
+            try:
+                project_meta = self.ticket_client.get_board_metadata(item.board_url)
+                if project_meta and project_meta.get("project_id"):
+                    # Build and cache metadata
+                    metadata = ProjectMetadata(
+                        project_url=item.board_url,
+                        repo=item.repo,
+                        project_id=project_meta.get("project_id"),
+                        status_field_id=project_meta.get("status_field_id"),
+                        status_options=project_meta.get("status_options", {}),
+                    )
+                    self.database.upsert_project_metadata(metadata)
+                    self._project_metadata[item.board_url] = metadata
+                    logger.info(f"Successfully fetched and cached metadata for {item.board_url}")
+                else:
+                    logger.warning(
+                        f"Failed to fetch project metadata for {item.board_url}, cannot archive"
+                    )
+                    self._archive_metadata_fetch_failed.add(item.board_url)
+                    return
+            except Exception as e:
+                logger.warning(f"Error fetching project metadata for {item.board_url}: {e}")
+                self._archive_metadata_fetch_failed.add(item.board_url)
+                return
+
+        # Double-check after potential lazy load
+        if not metadata or not metadata.project_id:
             return
 
         # Archive the project item
