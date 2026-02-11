@@ -100,6 +100,8 @@ class PrepareWorkflow:
             f"Clone {clone_url} to {repo_path} if missing. If it exists, pull from origin main to sync it to the latest commit.",
             (
                 f"Create a git worktree at exactly this path: {worktree_path}\n"
+                f"IMPORTANT: You MUST run the git worktree command from inside the cloned repo at {repo_path}. "
+                f"Use: git -C {repo_path} worktree add {worktree_path} -b <branch-name>\n"
                 f"{base_branch_instruction} "
                 f"The folder MUST be created at the exact path specified above - do not create it anywhere else. "
                 f"The branch name MUST start with the issue number ({ctx.issue_number}-) followed by a semantic slug based on the issue's details:\n"

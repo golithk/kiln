@@ -2225,7 +2225,7 @@ class Daemon:
 
             # Auto-prepare: Create worktree if it doesn't exist or is invalid (for any workflow)
             worktree_path = self._get_worktree_path(item.repo, item.ticket_id)
-            if not self.workspace_manager.is_valid_worktree(worktree_path):
+            if not self.workspace_manager.is_valid_worktree(worktree_path, repo=item.repo):
                 logger.info("Auto-preparing worktree")
                 # Add preparing label during worktree creation
                 self.ticket_client.add_label(item.repo, item.ticket_id, Labels.PREPARING)

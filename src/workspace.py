@@ -360,18 +360,71 @@ class WorkspaceManager:
         except Exception:
             return False
 
-    def is_valid_worktree(self, worktree_path: str) -> bool:
+    def _validate_worktree_ownership(self, worktree_path: Path, repo: str) -> bool:
+        """Validate that a worktree's gitdir points to the expected project clone.
+
+        Reads the .git file in the worktree to extract the gitdir path, then
+        verifies it references the correct project clone's .git/worktrees/ directory.
+        This catches cases where a worktree was accidentally created under the wrong
+        git repository (e.g., kiln's own repo instead of the managed project).
+
+        Args:
+            worktree_path: Path to the worktree directory
+            repo: Repository in 'hostname/owner/repo' or 'owner/repo' format
+
+        Returns:
+            True if the worktree belongs to the expected project clone, False otherwise
+        """
+        git_file = worktree_path / ".git"
+        try:
+            content = git_file.read_text().strip()
+            if not content.startswith("gitdir:"):
+                return False
+
+            gitdir = content[len("gitdir:") :].strip()
+            gitdir_path = Path(gitdir).resolve()
+
+            # gitdir should be like: <workspace>/<repo_id>/.git/worktrees/<name>
+            # Walk up to find the parent repo: go past worktrees/<name> and .git
+            # i.e., gitdir_path.parent.parent.parent is the repo root
+            repo_root = gitdir_path.parent.parent.parent
+
+            expected_repo_id = self._get_repo_identifier(repo)
+            expected_repo_path = (self.workspace_dir / expected_repo_id).resolve()
+
+            if repo_root != expected_repo_path:
+                logger.warning(
+                    f"Worktree ownership mismatch: gitdir points to repo at '{repo_root}', "
+                    f"expected '{expected_repo_path}'"
+                )
+                return False
+
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to validate worktree ownership: {e}")
+            return False
+
+    def is_valid_worktree(self, worktree_path: str, repo: str | None = None) -> bool:
         """Check if a path is a valid git worktree.
 
-        Public wrapper for _is_valid_worktree.
+        Public wrapper for _is_valid_worktree. When repo is provided, also
+        validates that the worktree belongs to the expected project clone.
 
         Args:
             worktree_path: Path to check (as string)
+            repo: Optional repository in 'hostname/owner/repo' or 'owner/repo' format.
+                  When provided, validates the worktree's gitdir points to this repo's clone.
 
         Returns:
-            True if path is a valid git worktree, False otherwise
+            True if path is a valid git worktree (and owned by the correct repo if specified),
+            False otherwise
         """
-        return self._is_valid_worktree(Path(worktree_path))
+        path = Path(worktree_path)
+        if not self._is_valid_worktree(path):
+            return False
+        if repo is not None:
+            return self._validate_worktree_ownership(path, repo)
+        return True
 
     def sync_worktree_with_main(self, worktree_path: str) -> bool:
         """

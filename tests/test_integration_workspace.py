@@ -515,6 +515,106 @@ class TestIsValidWorktree:
 
 
 @pytest.mark.integration
+class TestWorktreeOwnershipValidation:
+    """Tests for _validate_worktree_ownership and is_valid_worktree with repo param."""
+
+    def test_valid_ownership_returns_true(self, temp_workspace_dir):
+        """Test ownership validation passes when gitdir points to correct repo."""
+        manager = WorkspaceManager(temp_workspace_dir)
+        resolved_dir = Path(temp_workspace_dir).resolve()
+
+        # Create the expected repo clone directory structure
+        repo_git_dir = resolved_dir / "owner_repo" / ".git" / "worktrees" / "my-worktree"
+        repo_git_dir.mkdir(parents=True)
+
+        # Create worktree with .git file pointing to correct repo
+        worktree_path = resolved_dir / "owner_repo-issue-42"
+        worktree_path.mkdir()
+        git_file = worktree_path / ".git"
+        git_file.write_text(f"gitdir: {repo_git_dir}\n")
+
+        assert manager._validate_worktree_ownership(worktree_path, "owner/repo") is True
+
+    def test_wrong_repo_returns_false(self, temp_workspace_dir):
+        """Test ownership validation fails when gitdir points to wrong repo."""
+        manager = WorkspaceManager(temp_workspace_dir)
+        resolved_dir = Path(temp_workspace_dir).resolve()
+
+        # Create a different repo's git dir structure
+        wrong_repo_dir = resolved_dir / "wrong_repo" / ".git" / "worktrees" / "my-worktree"
+        wrong_repo_dir.mkdir(parents=True)
+
+        # Create worktree with .git file pointing to wrong repo
+        worktree_path = resolved_dir / "owner_repo-issue-42"
+        worktree_path.mkdir()
+        git_file = worktree_path / ".git"
+        git_file.write_text(f"gitdir: {wrong_repo_dir}\n")
+
+        assert manager._validate_worktree_ownership(worktree_path, "owner/repo") is False
+
+    def test_is_valid_worktree_with_repo_validates_ownership(self, temp_workspace_dir):
+        """Test is_valid_worktree rejects worktree owned by wrong repo when repo is given."""
+        manager = WorkspaceManager(temp_workspace_dir)
+        resolved_dir = Path(temp_workspace_dir).resolve()
+
+        # Create a different repo's git dir structure
+        wrong_repo_dir = resolved_dir / "wrong_repo" / ".git" / "worktrees" / "my-worktree"
+        wrong_repo_dir.mkdir(parents=True)
+
+        # Create a worktree that looks structurally valid but points to wrong repo
+        worktree_path = resolved_dir / "owner_repo-issue-42"
+        worktree_path.mkdir()
+        git_file = worktree_path / ".git"
+        git_file.write_text(f"gitdir: {wrong_repo_dir}\n")
+
+        # Without repo param, it passes (backward compat)
+        assert manager.is_valid_worktree(str(worktree_path)) is True
+        # With repo param, it fails
+        assert manager.is_valid_worktree(str(worktree_path), repo="owner/repo") is False
+
+    def test_is_valid_worktree_with_repo_accepts_correct_ownership(self, temp_workspace_dir):
+        """Test is_valid_worktree accepts worktree owned by correct repo."""
+        manager = WorkspaceManager(temp_workspace_dir)
+        resolved_dir = Path(temp_workspace_dir).resolve()
+
+        # Create correct repo structure
+        repo_git_dir = resolved_dir / "owner_repo" / ".git" / "worktrees" / "my-worktree"
+        repo_git_dir.mkdir(parents=True)
+
+        worktree_path = resolved_dir / "owner_repo-issue-42"
+        worktree_path.mkdir()
+        git_file = worktree_path / ".git"
+        git_file.write_text(f"gitdir: {repo_git_dir}\n")
+
+        assert manager.is_valid_worktree(str(worktree_path), repo="owner/repo") is True
+
+    def test_missing_git_file_returns_false(self, temp_workspace_dir):
+        """Test ownership validation returns false when .git file is missing."""
+        manager = WorkspaceManager(temp_workspace_dir)
+
+        worktree_path = Path(temp_workspace_dir).resolve() / "owner_repo-issue-42"
+        worktree_path.mkdir()
+
+        assert manager._validate_worktree_ownership(worktree_path, "owner/repo") is False
+
+    def test_hostname_repo_format(self, temp_workspace_dir):
+        """Test ownership validation works with hostname/owner/repo format."""
+        manager = WorkspaceManager(temp_workspace_dir)
+        resolved_dir = Path(temp_workspace_dir).resolve()
+
+        # _get_repo_identifier("github.com/owner/repo") returns "owner_repo"
+        repo_git_dir = resolved_dir / "owner_repo" / ".git" / "worktrees" / "wt"
+        repo_git_dir.mkdir(parents=True)
+
+        worktree_path = resolved_dir / "owner_repo-issue-1"
+        worktree_path.mkdir()
+        git_file = worktree_path / ".git"
+        git_file.write_text(f"gitdir: {repo_git_dir}\n")
+
+        assert manager._validate_worktree_ownership(worktree_path, "github.com/owner/repo") is True
+
+
+@pytest.mark.integration
 class TestCleanupWorkspaceBranchDeletion:
     """Tests for branch deletion in cleanup_workspace."""
 

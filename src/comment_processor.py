@@ -131,7 +131,7 @@ class CommentProcessor:
         worktree_path = self._get_worktree_path(item.repo, item.ticket_id)
 
         # Check if path exists AND is a valid git worktree
-        if self.workspace_manager.is_valid_worktree(worktree_path):
+        if self.workspace_manager.is_valid_worktree(worktree_path, repo=item.repo):
             return worktree_path
 
         logger.info(f"Worktree missing or invalid at {worktree_path}, running Prepare workflow")

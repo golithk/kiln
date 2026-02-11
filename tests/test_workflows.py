@@ -459,6 +459,22 @@ class TestPrepareWorkflow:
         assert "parent issue" not in prompts[1]
         assert "parent branch" not in prompts[1]
 
+    def test_prepare_workflow_includes_git_c_instruction(self):
+        """Test that worktree prompt instructs Claude to use git -C for correct repo."""
+        ctx = WorkflowContext(
+            repo="github.com/owner/repo",
+            issue_number=42,
+            issue_title="Test Issue",
+            workspace_path="/tmp/worktrees",
+            issue_body="Body text",
+        )
+        workflow = PrepareWorkflow()
+        prompts = workflow.init(ctx)
+
+        # Should instruct to run from inside the cloned repo
+        assert "git -C /tmp/worktrees/owner_repo worktree add" in prompts[1]
+        assert "MUST run the git worktree command from inside the cloned repo" in prompts[1]
+
 
 @pytest.mark.unit
 class TestCountTasks:
