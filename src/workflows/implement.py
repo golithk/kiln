@@ -1,6 +1,7 @@
 """Implementation workflow for executing the implementation plan."""
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -20,6 +21,7 @@ from src.interfaces import CheckRunResult
 from src.logger import get_logger, log_message
 from src.ticket_clients.base import NetworkError
 from src.ticket_clients.github import GitHubTicketClient
+from src.utils.gh import get_gh_env
 from src.workflows.base import WorkflowContext
 
 if TYPE_CHECKING:
@@ -223,6 +225,7 @@ def extract_plan_from_issue(repo: str, issue_number: int) -> tuple[str | None, s
             capture_output=True,
             text=True,
             check=True,
+            env={**os.environ, **get_gh_env(repo)},
         )
         data = json.loads(result.stdout)
         body = data.get("body", "") or ""
@@ -259,6 +262,7 @@ def collapse_plan_in_issue(repo: str, issue_number: int) -> None:
             capture_output=True,
             text=True,
             check=True,
+            env={**os.environ, **get_gh_env(repo)},
         )
         data = json.loads(result.stdout)
         body = data.get("body", "") or ""
@@ -339,6 +343,7 @@ def collapse_plan_in_issue(repo: str, issue_number: int) -> None:
             capture_output=True,
             text=True,
             check=True,
+            env={**os.environ, **get_gh_env(repo)},
         )
         logger.info(f"Collapsed plan section in issue #{issue_number}")
     except subprocess.CalledProcessError as e:
@@ -437,7 +442,12 @@ def create_draft_pr(
     def create_pr() -> str:
         try:
             result = subprocess.run(
-                cmd, cwd=workspace_path, capture_output=True, text=True, check=True
+                cmd,
+                cwd=workspace_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **get_gh_env(repo)},
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
@@ -558,6 +568,7 @@ class ImplementWorkflow:
                         capture_output=True,
                         text=True,
                         check=True,
+                        env={**os.environ, **get_gh_env(ctx.repo)},
                     )
                 except subprocess.CalledProcessError as e:
                     logger.warning(f"Failed to post comment for {key}: {e.stderr}")
@@ -749,7 +760,13 @@ class ImplementWorkflow:
         try:
             repo_ref = f"https://{repo}"
             cmd = ["gh", "pr", "ready", str(pr_number), "--repo", repo_ref]
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **get_gh_env(repo)},
+            )
             logger.info(f"Marked PR #{pr_number} as ready for review")
         except subprocess.CalledProcessError as e:
             logger.warning(f"Failed to mark PR #{pr_number} as ready: {e.stderr}")
@@ -814,7 +831,13 @@ class ImplementWorkflow:
                 "number,body",
             ]
 
-            proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **get_gh_env(repo)},
+            )
             output = proc.stdout.strip()
 
             if not output or output == "[]":
@@ -860,7 +883,13 @@ class ImplementWorkflow:
         try:
             repo_ref = f"https://{repo}"
             cmd = ["gh", "pr", "comment", str(pr_number), "--repo", repo_ref, "--body", body]
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                env={**os.environ, **get_gh_env(repo)},
+            )
             logger.debug(f"Added comment to PR #{pr_number}")
         except subprocess.CalledProcessError as e:
             logger.warning(f"Failed to add comment to PR #{pr_number}: {e.stderr}")

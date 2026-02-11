@@ -10,6 +10,7 @@ import contextlib
 import difflib
 import html
 import json
+import os
 import subprocess
 import textwrap
 from pathlib import Path
@@ -22,6 +23,7 @@ from src.integrations.slack import send_comment_processed_notification
 from src.interfaces import Comment, TicketClient, TicketItem
 from src.labels import Labels
 from src.logger import clear_issue_context, get_logger, set_issue_context
+from src.utils.gh import get_gh_env
 from src.workflows import PrepareWorkflow, ProcessCommentsWorkflow, WorkflowContext
 from src.workspace import WorkspaceManager
 
@@ -543,6 +545,7 @@ Processed feedback for **{target_type}**. No textual changes detected (may have 
                 capture_output=True,
                 text=True,
                 check=True,
+                env={**os.environ, **get_gh_env(repo)},
             )
             body: str = json.loads(proc.stdout).get("body", "") or ""
         except Exception:

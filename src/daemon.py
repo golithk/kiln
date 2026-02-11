@@ -8,6 +8,7 @@ This module provides the orchestrator that ties together all components:
 """
 
 import asyncio
+import os
 import re
 import signal
 import subprocess
@@ -58,6 +59,7 @@ from src.logger import (
 )
 from src.security import ActorCategory, check_actor_allowed
 from src.ticket_clients import get_github_client
+from src.utils.gh import get_gh_env
 from src.workflows import (
     ImplementWorkflow,
     PlanWorkflow,
@@ -1516,6 +1518,7 @@ class Daemon:
                 capture_output=True,
                 text=True,
                 check=True,
+                env={**os.environ, **get_gh_env(repo)},
             )
             if result.stdout.strip():
                 data: dict[str, Any] = json_module.loads(result.stdout)
@@ -2301,6 +2304,7 @@ class Daemon:
                 capture_output=True,
                 text=True,
                 check=True,
+                env={**os.environ, **get_gh_env(item.repo)},
             )
             logger.info(f"RESET: Cleared kiln content from {key}")
         except subprocess.CalledProcessError as e:

@@ -1672,12 +1672,21 @@ class TestImplementWorkflow:
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             workflow._mark_pr_ready("github.com/owner/repo", 42)
 
-        mock_run.assert_called_once_with(
-            ["gh", "pr", "ready", "42", "--repo", "https://github.com/owner/repo"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        assert call_args.args[0] == [
+            "gh",
+            "pr",
+            "ready",
+            "42",
+            "--repo",
+            "https://github.com/owner/repo",
+        ]
+        assert call_args.kwargs["capture_output"] is True
+        assert call_args.kwargs["text"] is True
+        assert call_args.kwargs["check"] is True
+        # For github.com, get_gh_env returns empty dict, so env should be os.environ
+        assert "env" in call_args.kwargs
 
     def test_mark_pr_ready_failure_logs_warning_no_raise(self):
         """Test that _mark_pr_ready logs warning on failure but doesn't raise."""
