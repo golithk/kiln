@@ -15,6 +15,7 @@ Key alternative approaches:
 
 import json
 import re
+import subprocess
 from typing import Any
 
 from src.interfaces import LinkedPullRequest, TicketItem
@@ -604,3 +605,86 @@ class GitHubEnterprise314Client(GitHubClientBase):
         has_merged = any(pr.get("merged", False) for pr in prs)
         logger.debug(f"Issue {repo}#{ticket_id} has_merged_changes={has_merged}")
         return has_merged
+
+    # Merge queue operations
+
+    def list_prs_by_label(self, repo: str, label: str, state: str = "open") -> list[dict[str, Any]]:
+        """List pull requests with a specific label.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            label: Label name to filter by
+            state: PR state filter ('open', 'closed', 'all')
+
+        Returns:
+            List of dicts with PR info: number, title, createdAt, headRefOid
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = [
+            "pr",
+            "list",
+            "--repo",
+            repo_ref,
+            "--label",
+            label,
+            "--state",
+            state,
+            "--json",
+            "number,title,createdAt,headRefOid",
+        ]
+
+        try:
+            output = self._run_gh_command(args, repo=repo)
+            result: list[dict[str, Any]] = json.loads(output)
+            logger.debug(f"Found {len(result)} PRs with label '{label}' in {repo}")
+            return result
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to list PRs by label '{label}' in {repo}: {e.stderr}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse PR list response: {e}")
+            return []
+
+    def merge_pr(self, repo: str, pr_number: int, merge_method: str = "squash") -> bool:
+        """Merge a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to merge
+            merge_method: Merge method ('merge', 'squash', 'rebase')
+
+        Returns:
+            True if merged successfully, False otherwise
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = ["pr", "merge", str(pr_number), "--repo", repo_ref, f"--{merge_method}"]
+
+        try:
+            self._run_gh_command(args, repo=repo)
+            logger.info(f"Merged PR #{pr_number} in {repo} using {merge_method}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to merge PR #{pr_number} in {repo}: {e.stderr}")
+            return False
+
+    def comment_on_pr(self, repo: str, pr_number: int, body: str) -> bool:
+        """Add a comment to a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to comment on
+            body: Comment body text
+
+        Returns:
+            True if comment added successfully, False otherwise
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = ["pr", "comment", str(pr_number), "--repo", repo_ref, "--body", body]
+
+        try:
+            self._run_gh_command(args, repo=repo)
+            logger.debug(f"Added comment to PR #{pr_number} in {repo}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to comment on PR #{pr_number} in {repo}: {e.stderr}")
+            return False

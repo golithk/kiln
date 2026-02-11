@@ -26,6 +26,7 @@ from src.comment_processor import CommentProcessor
 from src.config import STAGE_MODELS, Config, load_config
 from src.database import Database, ProjectMetadata, RunRecord
 from src.frontmatter import parse_issue_frontmatter
+from src.integrations.auto_merging import AutoMergingEntry, AutoMergingManager
 from src.integrations.azure_oauth import AzureOAuthClient
 from src.integrations.mcp_client import check_all_mcp_servers
 from src.integrations.mcp_config import MCPConfigManager
@@ -385,6 +386,10 @@ class Daemon:
         self.pr_validation_manager = PRValidationManager()
         self._validate_pr_validation_config()
 
+        # Initialize auto-merging manager for Dependabot PR queue
+        self.auto_merging_manager = AutoMergingManager()
+        self._validate_auto_merging_config()
+
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -512,6 +517,29 @@ class Daemon:
             logger.info(
                 f"PR validation config loaded: {len(entries)} repo(s) configured, "
                 f"{enabled_count} with validation enabled"
+            )
+
+    def _validate_auto_merging_config(self) -> None:
+        """Validate auto-merging configuration at startup.
+
+        Logs warnings for any configuration issues but does not fail startup.
+        This is an opt-in feature - if config is missing, auto-merging is disabled.
+        """
+        # Check if config file exists and log status
+        if not self.auto_merging_manager.has_config():
+            logger.debug("No auto-merging configuration found (feature disabled)")
+            return
+
+        # Validate config structure and log warnings
+        warnings = self.auto_merging_manager.validate_config()
+        for warning in warnings:
+            logger.warning(f"Auto-merging config warning: {warning}")
+
+        # Log loaded configuration for visibility
+        entries = self.auto_merging_manager.get_enabled_repos()
+        if entries:
+            logger.info(
+                f"Auto-merging config loaded: {len(entries)} repo(s) enabled for auto-merging"
             )
 
     def _validate_mcp_connections(self) -> None:
@@ -1126,6 +1154,9 @@ class Daemon:
             # Handle stop label: kill implementation without full reset
             for item in all_items:
                 self._maybe_handle_stop(item)
+
+            # Process Dependabot auto-merge queue
+            self._poll_merge_queue()
 
             # Collect items that need workflow execution
             items_to_process: list[TicketItem] = []
@@ -1886,6 +1917,262 @@ class Daemon:
         # Clear in-progress tracking so issue can be re-processed
         with self._in_progress_lock:
             self._in_progress.pop(key, None)
+
+    def _poll_merge_queue(self) -> None:
+        """Poll and process the auto-merge queue for all configured repositories.
+
+        This method runs as part of the main polling loop and handles:
+        1. Recovering state from labels (auto-merging, auto-merge-queue)
+        2. Discovering new Dependabot PRs with the configured label
+        3. Processing ONE PR at a time through the full merge flow
+        4. Triggering rebase on next PR after successful merge
+
+        Only processes repositories that have auto-merging enabled in their config.
+        """
+        enabled_repos = self.auto_merging_manager.get_enabled_repos()
+        if not enabled_repos:
+            return
+
+        for config in enabled_repos:
+            try:
+                self._process_repo_merge_queue(config)
+            except Exception as e:
+                logger.warning(f"Error processing merge queue for {config.repo}: {e}")
+
+    def _process_repo_merge_queue(
+        self,
+        config: AutoMergingEntry,
+    ) -> None:
+        """Process the merge queue for a single repository.
+
+        Implements a sequential, recoverable merge queue:
+        1. Recover from labels if daemon restarted
+        2. Discover new PRs and add to queue
+        3. Remove merged/closed PRs
+        4. Process ONLY the first PR in queue through the full flow:
+           - If behind main → trigger rebase, wait
+           - If CI running → wait
+           - If CI failed → skip (remove from processing)
+           - If not approved → approve
+           - If ready → merge
+        5. After merge, trigger rebase on next PR
+
+        Args:
+            config: AutoMergingEntry with repo settings
+        """
+        repo = config.repo
+
+        # 1. Recover state from labels (handles daemon restart)
+        self._recover_merge_queue_from_labels(repo, config.label)
+
+        # 2. Discover new PRs with the configured label
+        prs = self.ticket_client.list_prs_by_label(repo, config.label)
+        queue = self.database.get_merge_queue(repo)
+
+        # 3. Add new PRs to queue in creation order
+        existing_pr_numbers = {e.pr_number for e in queue}
+        new_prs = [pr for pr in prs if pr["number"] not in existing_pr_numbers]
+
+        # Sort by createdAt to maintain FIFO order
+        new_prs.sort(key=lambda p: p.get("createdAt", ""))
+
+        for pr in new_prs:
+            pr_number = pr["number"]
+            position = len(queue) + len([p for p in new_prs if p["number"] < pr_number])
+            self.database.add_to_merge_queue(repo, pr_number, position)
+            self.ticket_client.add_label(repo, pr_number, Labels.AUTO_MERGE_QUEUE)
+            logger.info(f"Added PR #{pr_number} to merge queue for {repo}")
+
+        # Refresh queue after adding new entries
+        queue = self.database.get_merge_queue(repo)
+
+        # 4. Remove PRs that were manually merged or closed
+        for entry in queue:
+            state = self.ticket_client.get_pr_state(repo, entry.pr_number)
+            if state in ("MERGED", "CLOSED"):
+                logger.info(f"Removing PR #{entry.pr_number} from queue ({state.lower()})")
+                self.database.remove_from_merge_queue(repo, entry.pr_number)
+                self.ticket_client.remove_label(repo, entry.pr_number, Labels.AUTO_MERGE_QUEUE)
+                self.ticket_client.remove_label(repo, entry.pr_number, Labels.AUTO_MERGING)
+
+        # Refresh queue after cleanup
+        queue = self.database.get_merge_queue(repo)
+
+        if not queue:
+            return  # Queue is empty
+
+        # 5. Process ONLY the first PR in queue (sequential processing)
+        first_pr = queue[0]
+        self._process_single_pr(repo, first_pr.pr_number, config.merge_method)
+
+    def _recover_merge_queue_from_labels(self, repo: str, _config_label: str) -> None:
+        """Recover merge queue state from GitHub labels after daemon restart.
+
+        Scans for PRs with auto-merge labels and ensures they're in the database.
+        Labels are the source of truth; database is rebuilt from them if needed.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            _config_label: The configured label for Dependabot PRs (unused, reserved for future)
+        """
+        queue = self.database.get_merge_queue(repo)
+        existing_pr_numbers = {e.pr_number for e in queue}
+
+        # Check for PRs with auto-merging label (was being processed)
+        merging_prs = self.ticket_client.list_prs_by_label(repo, Labels.AUTO_MERGING)
+        for pr in merging_prs:
+            pr_number = pr["number"]
+            if pr_number not in existing_pr_numbers:
+                # Recover: add to queue with 'merging' status at position 0
+                self.database.add_to_merge_queue(repo, pr_number, position=0)
+                self.database.update_merge_queue_status(repo, pr_number, "merging")
+                logger.info(f"Recovered PR #{pr_number} from auto-merging label")
+                existing_pr_numbers.add(pr_number)
+
+        # Check for PRs with auto-merge-queue label (was in queue)
+        queued_prs = self.ticket_client.list_prs_by_label(repo, Labels.AUTO_MERGE_QUEUE)
+        # Sort by createdAt to maintain order
+        queued_prs.sort(key=lambda p: p.get("createdAt", ""))
+
+        for pr in queued_prs:
+            pr_number = pr["number"]
+            if pr_number not in existing_pr_numbers:
+                # Recover: add to queue at end
+                position = len(existing_pr_numbers)
+                self.database.add_to_merge_queue(repo, pr_number, position)
+                logger.info(f"Recovered PR #{pr_number} from auto-merge-queue label")
+                existing_pr_numbers.add(pr_number)
+
+    def _process_single_pr(self, repo: str, pr_number: int, merge_method: str) -> None:
+        """Process a single PR through the merge flow.
+
+        Handles the full state machine for one PR:
+        1. Check merge state (BEHIND, BLOCKED, CLEAN, etc.)
+        2. If BEHIND → trigger rebase, wait for next poll
+        3. If CI running → wait for next poll
+        4. If CI failed → log and skip (will retry when CI passes)
+        5. If not approved → approve
+        6. If ready → merge
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to process
+            merge_method: Merge method ('merge', 'squash', 'rebase')
+        """
+        # Get merge state
+        merge_state = self.ticket_client.get_pr_merge_state(repo, pr_number)
+        if not merge_state:
+            logger.warning(f"Could not get merge state for PR #{pr_number}")
+            return
+
+        merge_status = merge_state.get("mergeStateStatus", "UNKNOWN")
+        mergeable = merge_state.get("mergeable", "UNKNOWN")
+        review_decision = merge_state.get("reviewDecision", "")
+
+        logger.debug(
+            f"PR #{pr_number} state: {merge_status}, mergeable: {mergeable}, review: {review_decision}"
+        )
+
+        # Handle conflicts - can't proceed
+        if mergeable == "CONFLICTING":
+            logger.warning(f"PR #{pr_number} has conflicts, skipping until resolved")
+            return
+
+        # Handle BEHIND - needs rebase
+        if merge_status == "BEHIND":
+            self._trigger_rebase_if_needed(repo, pr_number)
+            return
+
+        # Check CI status
+        sha = self.ticket_client.get_pr_head_sha(repo, pr_number)
+        if not sha:
+            logger.warning(f"Could not get HEAD SHA for PR #{pr_number}")
+            return
+
+        checks = self.ticket_client.get_check_runs(repo, sha)
+
+        # If CI still running, wait
+        if checks and any(not check.is_completed for check in checks):
+            if self.database.get_merge_queue_by_status(repo, "waiting_ci") is None:
+                self.database.update_merge_queue_status(repo, pr_number, "waiting_ci")
+            logger.debug(f"PR #{pr_number} CI still running, waiting...")
+            return
+
+        # If CI failed, log and wait for fix
+        if checks and not all(check.is_successful for check in checks):
+            failed_checks = [c.name for c in checks if c.is_failed]
+            logger.debug(f"PR #{pr_number} has failing checks: {failed_checks}, waiting for fix...")
+            return
+
+        # CI passed (or no CI configured) - proceed to approve and merge
+
+        # Update labels to show we're actively processing
+        self.ticket_client.remove_label(repo, pr_number, Labels.AUTO_MERGE_QUEUE)
+        self.ticket_client.add_label(repo, pr_number, Labels.AUTO_MERGING)
+        self.database.update_merge_queue_status(repo, pr_number, "merging")
+
+        # Approve if not already approved
+        if review_decision != "APPROVED":
+            logger.info(f"Approving PR #{pr_number}...")
+            if not self.ticket_client.approve_pr(repo, pr_number):
+                logger.warning(f"Failed to approve PR #{pr_number}, will retry next poll")
+                return
+
+        # Attempt merge
+        logger.info(f"Merging PR #{pr_number}...")
+        if self.ticket_client.merge_pr(repo, pr_number, merge_method):
+            logger.info(f"Successfully merged PR #{pr_number} in {repo}")
+            self.database.remove_from_merge_queue(repo, pr_number)
+            self.ticket_client.remove_label(repo, pr_number, Labels.AUTO_MERGING)
+            # Trigger rebase on next PR in queue
+            self._trigger_next_pr_rebase(repo)
+        else:
+            logger.warning(f"Failed to merge PR #{pr_number} in {repo}, will retry next poll")
+
+    def _trigger_rebase_if_needed(self, repo: str, pr_number: int) -> None:
+        """Trigger a rebase on a PR if not already waiting for one.
+
+        Comments `@dependabot rebase` to prompt Dependabot to rebase
+        against the latest base branch changes.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to rebase
+        """
+        entry = self.database.get_merge_queue_by_status(repo, "waiting_rebase")
+        if entry and entry.pr_number == pr_number:
+            logger.debug(f"PR #{pr_number} already waiting for rebase")
+            return
+
+        logger.info(f"PR #{pr_number} is behind, triggering rebase...")
+        if self.ticket_client.comment_on_pr(repo, pr_number, "@dependabot rebase"):
+            self.database.update_merge_queue_status(repo, pr_number, "waiting_rebase")
+            logger.debug(f"Rebase triggered for PR #{pr_number}")
+        else:
+            logger.warning(f"Failed to trigger rebase for PR #{pr_number}")
+
+    def _trigger_next_pr_rebase(self, repo: str) -> None:
+        """Trigger a rebase on the next PR in the queue after a successful merge.
+
+        Comments `@dependabot rebase` on the next PR to prompt Dependabot
+        to rebase it against the newly merged changes.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+        """
+        queue = self.database.get_merge_queue(repo)
+        if not queue:
+            logger.debug(f"Merge queue empty for {repo}")
+            return
+
+        next_pr = queue[0]
+        logger.info(f"Triggering rebase on next PR #{next_pr.pr_number}")
+
+        if self.ticket_client.comment_on_pr(repo, next_pr.pr_number, "@dependabot rebase"):
+            self.database.update_merge_queue_status(repo, next_pr.pr_number, "waiting_rebase")
+            logger.debug(f"Rebase triggered for PR #{next_pr.pr_number}")
+        else:
+            logger.warning(f"Failed to trigger rebase for PR #{next_pr.pr_number}")
 
     def _clear_kiln_content(self, item: TicketItem) -> None:
         """Clear kiln-generated content from an issue's body.

@@ -1905,6 +1905,157 @@ class GitHubTicketClient:
             logger.warning(f"Failed to get PR state for {repo}#{pr_number}: {e}")
             return None
 
+    # Merge queue operations
+
+    def list_prs_by_label(self, repo: str, label: str, state: str = "open") -> list[dict[str, Any]]:
+        """List pull requests with a specific label.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            label: Label name to filter by
+            state: PR state filter ('open', 'closed', 'all')
+
+        Returns:
+            List of dicts with PR info: number, title, createdAt, headRefOid
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = [
+            "pr",
+            "list",
+            "--repo",
+            repo_ref,
+            "--label",
+            label,
+            "--state",
+            state,
+            "--json",
+            "number,title,createdAt,headRefOid",
+        ]
+
+        try:
+            output = self._run_gh_command(args, repo=repo)
+            result: list[dict[str, Any]] = json.loads(output)
+            logger.debug(f"Found {len(result)} PRs with label '{label}' in {repo}")
+            return result
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to list PRs by label '{label}' in {repo}: {e.stderr}")
+            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse PR list response: {e}")
+            return []
+
+    def merge_pr(self, repo: str, pr_number: int, merge_method: str = "squash") -> bool:
+        """Merge a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to merge
+            merge_method: Merge method ('merge', 'squash', 'rebase')
+
+        Returns:
+            True if merged successfully, False otherwise
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = ["pr", "merge", str(pr_number), "--repo", repo_ref, f"--{merge_method}"]
+
+        try:
+            self._run_gh_command(args, repo=repo)
+            logger.info(f"Merged PR #{pr_number} in {repo} using {merge_method}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to merge PR #{pr_number} in {repo}: {e.stderr}")
+            return False
+
+    def approve_pr(self, repo: str, pr_number: int) -> bool:
+        """Approve a pull request.
+
+        Submits an approving review on behalf of the authenticated user.
+        Required when branch protection rules require code owner approval.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to approve
+
+        Returns:
+            True if approved successfully, False otherwise
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = ["pr", "review", str(pr_number), "--repo", repo_ref, "--approve"]
+
+        try:
+            self._run_gh_command(args, repo=repo)
+            logger.info(f"Approved PR #{pr_number} in {repo}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to approve PR #{pr_number} in {repo}: {e.stderr}")
+            return False
+
+    def get_pr_merge_state(self, repo: str, pr_number: int) -> dict[str, Any] | None:
+        """Get the merge state details of a pull request.
+
+        Returns detailed information about the PR's merge readiness including
+        whether it needs rebasing, has conflicts, or is blocked by requirements.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to check
+
+        Returns:
+            Dict with keys: mergeStateStatus, mergeable, reviewDecision
+            - mergeStateStatus: BEHIND, BLOCKED, CLEAN, DIRTY, UNSTABLE, UNKNOWN
+            - mergeable: MERGEABLE, CONFLICTING, UNKNOWN
+            - reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or empty
+            Returns None on error.
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = [
+            "pr",
+            "view",
+            str(pr_number),
+            "--repo",
+            repo_ref,
+            "--json",
+            "mergeStateStatus,mergeable,reviewDecision",
+        ]
+
+        try:
+            output = self._run_gh_command(args, repo=repo)
+            result: dict[str, Any] = json.loads(output)
+            logger.debug(
+                f"PR #{pr_number} merge state: {result.get('mergeStateStatus')}, "
+                f"mergeable: {result.get('mergeable')}, "
+                f"review: {result.get('reviewDecision')}"
+            )
+            return result
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to get merge state for PR #{pr_number} in {repo}: {e.stderr}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse PR merge state response: {e}")
+            return None
+
+    def comment_on_pr(self, repo: str, pr_number: int, body: str) -> bool:
+        """Add a comment to a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to comment on
+            body: Comment body text
+
+        Returns:
+            True if comment added successfully, False otherwise
+        """
+        repo_ref = self._get_repo_ref(repo)
+        args = ["pr", "comment", str(pr_number), "--repo", repo_ref, "--body", body]
+
+        try:
+            self._run_gh_command(args, repo=repo)
+            logger.debug(f"Added comment to PR #{pr_number} in {repo}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to comment on PR #{pr_number} in {repo}: {e.stderr}")
+            return False
+
     # Internal helpers
 
     def _parse_board_url(self, board_url: str) -> tuple[str, str, str, int]:
