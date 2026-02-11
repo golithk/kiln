@@ -29,6 +29,7 @@ from src.frontmatter import parse_issue_frontmatter
 from src.integrations.azure_oauth import AzureOAuthClient
 from src.integrations.mcp_client import check_all_mcp_servers
 from src.integrations.mcp_config import MCPConfigManager
+from src.integrations.pr_validation import PRValidationManager
 from src.integrations.repo_credentials import RepoCredentialsManager
 from src.integrations.slack import (
     init_slack,
@@ -380,6 +381,10 @@ class Daemon:
         self.repo_credentials_manager = RepoCredentialsManager()
         self.repo_credentials_manager.validate_credential_paths()
 
+        # Initialize PR validation manager
+        self.pr_validation_manager = PRValidationManager()
+        self._validate_pr_validation_config()
+
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -482,6 +487,32 @@ class Daemon:
             self.ticket_client.validate_scopes(hostname)
 
         logger.info(f"GitHub connection validation successful for {len(hostnames)} host(s)")
+
+    def _validate_pr_validation_config(self) -> None:
+        """Validate PR validation configuration at startup.
+
+        Logs warnings for any configuration issues but does not fail startup.
+        This is a non-critical feature - if config is missing, existing behavior
+        (mark PR ready immediately) is preserved.
+        """
+        # Check if config file exists and log status
+        if not self.pr_validation_manager.has_config():
+            logger.debug("No PR validation configuration found (feature disabled)")
+            return
+
+        # Validate config structure and log warnings
+        warnings = self.pr_validation_manager.validate_config()
+        for warning in warnings:
+            logger.warning(f"PR validation config warning: {warning}")
+
+        # Log loaded configuration for visibility
+        entries = self.pr_validation_manager.load_config()
+        if entries:
+            enabled_count = sum(1 for e in entries if e.validate_before_ready)
+            logger.info(
+                f"PR validation config loaded: {len(entries)} repo(s) configured, "
+                f"{enabled_count} with validation enabled"
+            )
 
     def _validate_mcp_connections(self) -> None:
         """Validate MCP server connections at startup.
@@ -2697,7 +2728,7 @@ class Daemon:
         try:
             # ImplementWorkflow has its own execute() method with internal loop
             if workflow_name == "Implement" and hasattr(workflow, "execute"):
-                workflow.execute(ctx, self.config)
+                workflow.execute(ctx, self.config, self.pr_validation_manager)
                 session_id = None  # No session resumption for implement workflow
             else:
                 session_id = self.runner.run(

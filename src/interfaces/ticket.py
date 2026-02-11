@@ -65,6 +65,46 @@ class Comment:
 
 
 @dataclass
+class CheckRunResult:
+    """Represents a CI check run or commit status result.
+
+    This dataclass captures the state of a single CI check (from GitHub Actions
+    check runs or commit status checks from external CI systems like Jenkins).
+
+    Attributes:
+        name: Name of the check run or status context (e.g., "CI / test", "jenkins/build").
+        status: Current status of the check (queued, in_progress, completed).
+        conclusion: Final result when completed (success, failure, neutral, cancelled,
+            skipped, timed_out, action_required). None if not yet completed.
+        details_url: Optional URL to view more details about the check.
+        output: Optional output summary or failure message from the check.
+    """
+
+    name: str
+    status: str  # queued, in_progress, completed
+    conclusion: str | None = (
+        None  # success, failure, neutral, cancelled, skipped, timed_out, action_required
+    )
+    details_url: str | None = None
+    output: str | None = None
+
+    @property
+    def is_completed(self) -> bool:
+        """Check if this run has completed."""
+        return self.status == "completed"
+
+    @property
+    def is_successful(self) -> bool:
+        """Check if this run completed successfully."""
+        return self.is_completed and self.conclusion in ("success", "neutral", "skipped")
+
+    @property
+    def is_failed(self) -> bool:
+        """Check if this run completed with a failure."""
+        return self.is_completed and self.conclusion in ("failure", "timed_out", "action_required")
+
+
+@dataclass
 class LinkedPullRequest:
     """Abstract representation of a pull request linked to a ticket.
 

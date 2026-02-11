@@ -12,7 +12,7 @@ import subprocess
 from datetime import datetime
 from typing import Any
 
-from src.interfaces import Comment, LinkedPullRequest, TicketItem
+from src.interfaces import CheckRunResult, Comment, LinkedPullRequest, TicketItem
 from src.labels import REQUIRED_LABELS, LabelConfig
 from src.logger import get_logger, is_debug_mode
 from src.ticket_clients.base import NetworkError
@@ -1509,6 +1509,168 @@ class GitHubTicketClient:
         except Exception as e:
             logger.error(f"Failed to get HEAD SHA for PR {repo}#{pr_number}: {e}")
             return None
+
+    def get_check_runs(self, repo: str, sha: str) -> list[CheckRunResult]:
+        """Get all check runs and commit statuses for a commit SHA.
+
+        Queries both GitHub Actions check runs and external CI commit statuses
+        (from Jenkins, CircleCI, etc.) to provide a unified view of all CI checks
+        on a commit.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            sha: Commit SHA to query check runs for
+
+        Returns:
+            List of CheckRunResult objects representing all checks on the commit.
+            Empty list if no checks found or on error.
+        """
+        hostname, owner, repo_name = self._parse_repo(repo)
+        results: list[CheckRunResult] = []
+
+        # Query GitHub Actions check runs (with pagination)
+        check_runs = self._get_check_runs_for_commit(hostname, owner, repo_name, sha)
+        results.extend(check_runs)
+
+        # Query commit statuses (from external CI systems)
+        commit_statuses = self._get_commit_statuses_for_commit(hostname, owner, repo_name, sha)
+        results.extend(commit_statuses)
+
+        logger.debug(f"Found {len(results)} check runs for {repo}@{sha[:8]}")
+        return results
+
+    def _get_check_runs_for_commit(
+        self, hostname: str, owner: str, repo_name: str, sha: str
+    ) -> list[CheckRunResult]:
+        """Get GitHub Actions check runs for a commit.
+
+        Args:
+            hostname: GitHub hostname
+            owner: Repository owner
+            repo_name: Repository name
+            sha: Commit SHA
+
+        Returns:
+            List of CheckRunResult objects from GitHub Actions check runs.
+        """
+        results: list[CheckRunResult] = []
+        endpoint = f"repos/{owner}/{repo_name}/commits/{sha}/check-runs"
+        page = 1
+        per_page = 100
+        max_pages = 10  # Safety limit
+
+        try:
+            while page <= max_pages:
+                args = ["api", f"{endpoint}?per_page={per_page}&page={page}"]
+                output = self._run_gh_command(args, hostname=hostname)
+                data = json.loads(output)
+
+                check_runs = data.get("check_runs", [])
+                if not check_runs:
+                    break
+
+                for run in check_runs:
+                    # Map GitHub's status to our internal status
+                    status = run.get("status", "queued")
+                    conclusion = run.get("conclusion")
+
+                    # Extract output summary if available
+                    output_data = run.get("output", {})
+                    output_summary = None
+                    if output_data:
+                        title = output_data.get("title", "")
+                        summary = output_data.get("summary", "")
+                        if title or summary:
+                            output_summary = f"{title}: {summary}".strip(": ")
+
+                    results.append(
+                        CheckRunResult(
+                            name=run.get("name", "unknown"),
+                            status=status,
+                            conclusion=conclusion,
+                            details_url=run.get("details_url"),
+                            output=output_summary,
+                        )
+                    )
+
+                # Check if we have more pages
+                total_count = data.get("total_count", 0)
+                if len(results) >= total_count:
+                    break
+                page += 1
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to get check runs for {owner}/{repo_name}@{sha}: {e.stderr}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse check runs response: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting check runs: {e}")
+
+        return results
+
+    def _get_commit_statuses_for_commit(
+        self, hostname: str, owner: str, repo_name: str, sha: str
+    ) -> list[CheckRunResult]:
+        """Get commit statuses for a commit (from external CI systems).
+
+        Commit statuses come from external CI systems like Jenkins, CircleCI,
+        Travis CI, etc. that use the GitHub Commit Status API.
+
+        Args:
+            hostname: GitHub hostname
+            owner: Repository owner
+            repo_name: Repository name
+            sha: Commit SHA
+
+        Returns:
+            List of CheckRunResult objects from commit statuses.
+        """
+        results: list[CheckRunResult] = []
+        endpoint = f"repos/{owner}/{repo_name}/commits/{sha}/status"
+
+        try:
+            args = ["api", endpoint]
+            output = self._run_gh_command(args, hostname=hostname)
+            data = json.loads(output)
+
+            statuses = data.get("statuses", [])
+            for status in statuses:
+                # Map GitHub commit status state to our format
+                # GitHub status states: error, failure, pending, success
+                state = status.get("state", "pending")
+
+                # Map state to our status/conclusion format
+                if state == "pending":
+                    run_status = "in_progress"
+                    conclusion = None
+                else:
+                    run_status = "completed"
+                    # Map success/failure/error to conclusion
+                    if state == "success":
+                        conclusion = "success"
+                    elif state == "failure":
+                        conclusion = "failure"
+                    else:  # error
+                        conclusion = "failure"
+
+                results.append(
+                    CheckRunResult(
+                        name=status.get("context", "unknown"),
+                        status=run_status,
+                        conclusion=conclusion,
+                        details_url=status.get("target_url"),
+                        output=status.get("description"),
+                    )
+                )
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to get commit statuses for {owner}/{repo_name}@{sha}: {e.stderr}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse commit statuses response: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error getting commit statuses: {e}")
+
+        return results
 
     def set_commit_status(
         self,

@@ -11,12 +11,15 @@ from tenacity import wait_exponential
 
 from src.claude_runner import run_claude
 from src.config import STAGE_MODELS
+from src.integrations.pr_validation import PRValidationManager
 from src.integrations.slack import (
     send_implementation_beginning_notification,
     send_ready_for_validation_notification,
 )
+from src.interfaces import CheckRunResult
 from src.logger import get_logger, log_message
 from src.ticket_clients.base import NetworkError
+from src.ticket_clients.github import GitHubTicketClient
 from src.workflows.base import WorkflowContext
 
 if TYPE_CHECKING:
@@ -485,12 +488,20 @@ class ImplementWorkflow:
         """
         return []
 
-    def execute(self, ctx: WorkflowContext, config: "Config") -> None:
+    def execute(
+        self,
+        ctx: WorkflowContext,
+        config: "Config",
+        validation_manager: PRValidationManager | None = None,
+    ) -> None:
         """Execute the implementation workflow with internal loop.
 
         Args:
             ctx: WorkflowContext with issue and repository information
             config: Application configuration for model selection
+            validation_manager: Optional PRValidationManager for CI validation.
+                If not provided, a new instance will be created for backward
+                compatibility.
         """
         issue_url = f"https://{ctx.repo}/issues/{ctx.issue_number}"
         key = f"{ctx.repo}#{ctx.issue_number}"
@@ -710,16 +721,15 @@ class ImplementWorkflow:
             implement_prompt = f"/kiln-implement_github for issue {issue_url}.{reviewer_flags}{project_url_context}"
             self._run_prompt(implement_prompt, ctx, config, "implement")
 
-        # Check final state and mark PR ready if all tasks complete
+        # Check final state and run validation phase if all tasks complete
         pr_info = self._get_pr_for_issue(ctx.repo, ctx.issue_number)
         if pr_info:
             pr_body = pr_info.get("body", "")
             total_tasks, completed_tasks = count_checkboxes(pr_body)
             final_pr_number = pr_info.get("number")
             if total_tasks > 0 and completed_tasks == total_tasks and final_pr_number:
-                self._mark_pr_ready(ctx.repo, final_pr_number)
-                pr_url = f"https://{ctx.repo}/pull/{final_pr_number}"
-                send_ready_for_validation_notification(pr_url, final_pr_number)
+                # Run validation phase which handles CI wait, fix loop, and marking PR ready
+                self._run_validation_phase(ctx, config, final_pr_number, validation_manager)
             elif iteration >= max_iterations_estimate:
                 # Hit max iterations without completing all tasks
                 logger.warning(f"Hit max iterations ({max_iterations_estimate}) for {key}")
@@ -838,3 +848,320 @@ class ImplementWorkflow:
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse PR response: {e}")
             return None
+
+    def _add_pr_comment(self, repo: str, pr_number: int, body: str) -> None:
+        """Add a comment to a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number
+            body: Comment body text
+        """
+        try:
+            repo_ref = f"https://{repo}"
+            cmd = ["gh", "pr", "comment", str(pr_number), "--repo", repo_ref, "--body", body]
+            subprocess.run(cmd, capture_output=True, text=True, check=True)
+            logger.debug(f"Added comment to PR #{pr_number}")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to add comment to PR #{pr_number}: {e.stderr}")
+
+    def _wait_for_ci(
+        self,
+        repo: str,
+        pr_number: int,
+        sha: str,
+        timeout: int = 600,
+    ) -> list[CheckRunResult]:
+        """Wait for all CI checks to complete on a commit.
+
+        Polls GitHub for check run statuses with exponential backoff until all
+        checks complete or the timeout is reached. Comments on the PR at progress
+        milestones (3 min, 5 min, and timeout).
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number for commenting
+            sha: Commit SHA to query check runs for
+            timeout: Maximum time in seconds to wait for checks (default 600s)
+
+        Returns:
+            List of failed CheckRunResult objects. Empty list if all checks passed.
+            If timeout is reached, returns whatever failed checks were found.
+        """
+        client = GitHubTicketClient()
+        start_time = time.time()
+        poll_interval = 2.0  # Start with 2s interval
+        max_poll_interval = 60.0  # Cap at 60s
+        backoff_multiplier = 2.0
+
+        # Milestone tracking for PR comments
+        commented_3min = False
+        commented_5min = False
+        commented_timeout = False
+
+        logger.info(
+            f"Waiting for CI checks on {repo}#{pr_number} (SHA: {sha[:8]}, timeout: {timeout}s)"
+        )
+
+        while True:
+            elapsed = time.time() - start_time
+
+            # Check for timeout
+            if elapsed >= timeout:
+                if not commented_timeout:
+                    self._add_pr_comment(
+                        repo,
+                        pr_number,
+                        f"⏰ CI validation timeout reached ({timeout}s). Proceeding with available results.",
+                    )
+                    commented_timeout = True
+                break
+
+            # Add milestone comments
+            if elapsed >= 180 and not commented_3min:
+                self._add_pr_comment(
+                    repo,
+                    pr_number,
+                    "⏳ Still waiting for CI checks to complete (3 minutes elapsed)...",
+                )
+                commented_3min = True
+            elif elapsed >= 300 and not commented_5min:
+                self._add_pr_comment(
+                    repo,
+                    pr_number,
+                    "⏳ Still waiting for CI checks to complete (5 minutes elapsed)...",
+                )
+                commented_5min = True
+
+            # Query check runs with retry on network errors
+            try:
+                check_runs = _retry_with_backoff(
+                    lambda: client.get_check_runs(repo, sha),
+                    max_attempts=3,
+                    initial_delay=5.0,
+                    max_delay=30.0,
+                    description=f"get_check_runs for {sha[:8]}",
+                )
+            except NetworkError as e:
+                logger.error(f"Failed to get check runs after retries: {e}")
+                # On persistent network error, return empty list to allow proceeding
+                return []
+
+            # Check if we have any checks
+            if not check_runs:
+                logger.debug(f"No check runs found for {sha[:8]}, waiting...")
+                time.sleep(poll_interval)
+                poll_interval = min(poll_interval * backoff_multiplier, max_poll_interval)
+                continue
+
+            # Count completed vs in-progress checks
+            completed = [run for run in check_runs if run.is_completed]
+            in_progress = [run for run in check_runs if not run.is_completed]
+
+            logger.debug(
+                f"Check runs status: {len(completed)}/{len(check_runs)} completed, "
+                f"{len(in_progress)} in progress"
+            )
+
+            # If all checks completed, return failed ones
+            if not in_progress:
+                failed = [run for run in check_runs if run.is_failed]
+                if failed:
+                    logger.info(
+                        f"All CI checks completed. {len(failed)} failed: "
+                        f"{', '.join(r.name for r in failed)}"
+                    )
+                else:
+                    logger.info("All CI checks completed successfully")
+                return failed
+
+            # Wait before next poll with exponential backoff
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * backoff_multiplier, max_poll_interval)
+
+        # Timeout reached - return whatever failed checks we found
+        try:
+            check_runs = client.get_check_runs(repo, sha)
+            failed = [run for run in check_runs if run.is_failed]
+            logger.warning(
+                f"CI validation timed out after {timeout}s. Found {len(failed)} failed checks."
+            )
+            return failed
+        except Exception as e:
+            logger.error(f"Failed to get final check runs status: {e}")
+            return []
+
+    def _format_failed_checks(self, failed_checks: list[CheckRunResult]) -> str:
+        """Format failed check runs into a human-readable summary for the fix prompt.
+
+        Args:
+            failed_checks: List of failed CheckRunResult objects
+
+        Returns:
+            Formatted string describing all failed checks
+        """
+        if not failed_checks:
+            return "No failures detected."
+
+        lines = []
+        for check in failed_checks:
+            lines.append(f"### {check.name}")
+            lines.append(f"- **Status**: {check.status}")
+            lines.append(f"- **Conclusion**: {check.conclusion}")
+            if check.details_url:
+                lines.append(f"- **Details**: {check.details_url}")
+            if check.output:
+                lines.append(f"- **Output**: {check.output}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _run_validation_phase(
+        self,
+        ctx: WorkflowContext,
+        config: "Config",
+        pr_number: int,
+        validation_manager: PRValidationManager | None = None,
+    ) -> None:
+        """Run CI validation phase before marking PR ready for review.
+
+        This method:
+        1. Loads validation config for the repo
+        2. If validate_before_ready is false, skips validation (existing behavior)
+        3. If validate_before_ready is true:
+           - Gets PR head SHA
+           - Waits for CI checks to complete
+           - If failures, runs Claude with fix prompt
+           - Commits, pushes, and re-checks (loop up to max_fix_attempts)
+           - Implements stall detection if same error repeats twice
+           - Comments to PR documenting fixes
+        4. After validation (or timeout), marks PR ready for review
+
+        Args:
+            ctx: WorkflowContext with issue and repository information
+            config: Application configuration for model selection
+            pr_number: PR number to validate
+            validation_manager: Optional PRValidationManager for loading validation
+                config. If not provided, a new instance will be created for backward
+                compatibility.
+        """
+        key = f"{ctx.repo}#{ctx.issue_number}"
+        logger.info(f"Starting validation phase for {key} (PR #{pr_number})")
+
+        # Use provided validation manager or create one for backward compatibility
+        if validation_manager is None:
+            validation_manager = PRValidationManager()
+        validation_config = validation_manager.get_validation_config(ctx.repo)
+
+        if validation_config is None or not validation_config.validate_before_ready:
+            logger.info(f"Validation not enabled for {ctx.repo}, marking PR ready immediately")
+            self._mark_pr_ready(ctx.repo, pr_number)
+            return
+
+        logger.info(
+            f"Validation enabled for {ctx.repo}: "
+            f"max_fix_attempts={validation_config.max_fix_attempts}, "
+            f"timeout={validation_config.timeout}s"
+        )
+
+        # Get GitHub client for PR operations
+        client = GitHubTicketClient()
+
+        # Track fix attempts and stall detection
+        fix_attempts = 0
+        last_error_signature = ""
+        pr_url = f"https://{ctx.repo}/pull/{pr_number}"
+
+        while fix_attempts < validation_config.max_fix_attempts:
+            # Get current PR head SHA
+            sha = client.get_pr_head_sha(ctx.repo, pr_number)
+            if not sha:
+                logger.error(f"Failed to get HEAD SHA for PR #{pr_number}")
+                break
+
+            logger.info(f"Waiting for CI checks on SHA: {sha[:8]}")
+
+            # Wait for CI checks to complete
+            failed_checks = self._wait_for_ci(
+                ctx.repo,
+                pr_number,
+                sha,
+                timeout=validation_config.timeout,
+            )
+
+            # If all checks passed, we're done
+            if not failed_checks:
+                logger.info(f"All CI checks passed for {key}")
+                self._add_pr_comment(
+                    ctx.repo,
+                    pr_number,
+                    "✅ CI validation passed - all checks completed successfully.",
+                )
+                break
+
+            # Check for stall - same errors repeating
+            current_error_signature = ",".join(sorted(c.name for c in failed_checks))
+            if current_error_signature == last_error_signature:
+                logger.warning(
+                    f"Stall detected: same failures repeating ({current_error_signature})"
+                )
+                self._add_pr_comment(
+                    ctx.repo,
+                    pr_number,
+                    f"⚠️ CI validation stalled: same failures repeating after fix attempt.\n\n"
+                    f"Failed checks: {', '.join(c.name for c in failed_checks)}\n\n"
+                    "Stopping fix loop to prevent infinite attempts.",
+                )
+                break
+
+            last_error_signature = current_error_signature
+            fix_attempts += 1
+
+            logger.info(
+                f"CI check failures detected (attempt {fix_attempts}/{validation_config.max_fix_attempts}): "
+                f"{', '.join(c.name for c in failed_checks)}"
+            )
+
+            # Format failure information for the fix prompt
+            failure_summary = self._format_failed_checks(failed_checks)
+
+            # Comment on PR about attempting to fix
+            self._add_pr_comment(
+                ctx.repo,
+                pr_number,
+                f"🔧 CI failures detected, attempting fix (attempt {fix_attempts}/{validation_config.max_fix_attempts}):\n\n"
+                f"{', '.join(c.name for c in failed_checks)}",
+            )
+
+            # Run Claude with the fix prompt
+            # The fix prompt expects ci_output to be passed as arguments
+            fix_prompt = f"/kiln-fix_ci_failures {failure_summary}"
+
+            try:
+                self._run_prompt(fix_prompt, ctx, config, "fix_ci")
+            except Exception as e:
+                logger.error(f"Fix prompt failed: {e}")
+                self._add_pr_comment(
+                    ctx.repo,
+                    pr_number,
+                    f"❌ Failed to run fix prompt: {e}",
+                )
+                break
+
+            # After fix prompt runs, Claude should have committed and pushed
+            # The loop will continue to re-check CI with the new SHA
+
+        # Check if we exhausted fix attempts without success
+        if fix_attempts >= validation_config.max_fix_attempts:
+            logger.warning(f"Exhausted max fix attempts ({validation_config.max_fix_attempts})")
+            self._add_pr_comment(
+                ctx.repo,
+                pr_number,
+                f"⚠️ CI validation: exhausted maximum fix attempts ({validation_config.max_fix_attempts}). "
+                "Marking PR ready despite failures.",
+            )
+
+        # Mark PR ready for review after validation phase completes
+        self._mark_pr_ready(ctx.repo, pr_number)
+        pr_url = f"https://{ctx.repo}/pull/{pr_number}"
+        send_ready_for_validation_notification(pr_url, pr_number)

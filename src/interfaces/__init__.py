@@ -1,6 +1,7 @@
 """Abstract interfaces for ticket system integrations."""
 
 from src.interfaces.ticket import (
+    CheckRunResult,
     Comment,
     LinkedPullRequest,
     TicketClient,
@@ -8,6 +9,7 @@ from src.interfaces.ticket import (
 )
 
 __all__ = [
+    "CheckRunResult",
     "Comment",
     "LinkedPullRequest",
     "TicketClient",

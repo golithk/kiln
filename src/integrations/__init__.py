@@ -4,6 +4,7 @@ This package contains modules for optional external services:
 - azure_oauth: Azure Entra ID authentication
 - mcp_client: MCP server connectivity testing
 - mcp_config: MCP configuration management
+- pr_validation: PR validation configuration management
 - repo_credentials: Repository credential file management
 - slack: Slack notifications
 - telemetry: OpenTelemetry instrumentation
@@ -30,6 +31,14 @@ from src.integrations.mcp_config import (
     MCPConfigLoadError,
     MCPConfigManager,
     MCPConfigWriteError,
+)
+
+# Re-exports from pr_validation
+from src.integrations.pr_validation import (
+    PRValidationEntry,
+    PRValidationError,
+    PRValidationLoadError,
+    PRValidationManager,
 )
 
 # Re-exports from repo_credentials
@@ -72,6 +81,11 @@ __all__ = [
     "MCPConfigLoadError",
     "MCPConfigManager",
     "MCPConfigWriteError",
+    # pr_validation
+    "PRValidationEntry",
+    "PRValidationError",
+    "PRValidationLoadError",
+    "PRValidationManager",
     # repo_credentials
     "RepoCredentialEntry",
     "RepoCredentialsError",
