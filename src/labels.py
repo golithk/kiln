@@ -43,6 +43,7 @@ class Labels:
     AUTO = "auto"  # Synonym for yolo
     YOLO_FAILED = "yolo_failed"
     RESET = "reset"
+    STOP = "stop"
 
     # Labels that trigger auto-progression (yolo and its synonyms)
     YOLO_LABELS = frozenset({YOLO, AUTO})
@@ -106,6 +107,10 @@ REQUIRED_LABELS: dict[str, LabelConfig] = {
     Labels.RESET: {
         "description": "Clear kiln content and move issue to Backlog",
         "color": "3B82F6",  # Blue
+    },
+    Labels.STOP: {
+        "description": "Stop running implementation",
+        "color": "DC143C",  # Crimson red
     },
     Labels.IMPLEMENTATION_FAILED: {
         "description": "Implementation workflow failed after retries",

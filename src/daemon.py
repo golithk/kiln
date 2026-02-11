@@ -1092,6 +1092,10 @@ class Daemon:
             for item in all_items:
                 self._maybe_handle_reset(item)
 
+            # Handle stop label: kill implementation without full reset
+            for item in all_items:
+                self._maybe_handle_stop(item)
+
             # Collect items that need workflow execution
             items_to_process: list[TicketItem] = []
             for item in all_items:
@@ -1786,6 +1790,71 @@ class Daemon:
             logger.info(f"RESET: Cleared placement_status for {key}")
         except Exception as e:
             logger.warning(f"RESET: Failed to clear placement_status for {key}: {e}")
+
+    def _maybe_handle_stop(self, item: TicketItem) -> None:
+        """Handle the stop label - kills running implementation without full reset.
+
+        When a user adds the 'stop' label to an issue during implementation:
+        1. Validates the label was added by an allowed user
+        2. Removes the 'stop' label
+        3. Kills any running subprocess for this issue
+        4. Removes the 'implementing' label
+        5. Issue stays in Implement status (can be restarted)
+
+        This is a lighter-weight alternative to reset - it stops work but
+        preserves the worktree, PR, and any progress made.
+
+        Args:
+            item: TicketItem to check (with cached labels)
+        """
+        # Only process items with the stop label
+        if Labels.STOP not in item.labels:
+            return
+
+        # Only process during implementation (per spec: "only during implementing")
+        if Labels.IMPLEMENTING not in item.labels:
+            # Just remove the stop label if not implementing
+            self.ticket_client.remove_label(item.repo, item.ticket_id, Labels.STOP)
+            return
+
+        # Skip closed issues
+        if item.state == "CLOSED":
+            return
+
+        key = f"{item.repo}#{item.ticket_id}"
+
+        # Validate actor - same pattern as reset
+        actor = self.ticket_client.get_label_actor(item.repo, item.ticket_id, Labels.STOP)
+        actor_category = check_actor_allowed(
+            actor, self.config.username_self, key, "STOP", self.config.team_usernames
+        )
+        if actor_category != ActorCategory.SELF:
+            # Only remove stop label when actor is known but not allowed
+            # (to prevent repeated warnings). When actor is unknown, keep label.
+            if actor_category == ActorCategory.BLOCKED or actor_category == ActorCategory.TEAM:
+                self.ticket_client.remove_label(item.repo, item.ticket_id, Labels.STOP)
+            return
+
+        logger.info(f"STOP: Processing stop for {key} (label added by allowed user '{actor}')")
+
+        # Remove the stop label first
+        self.ticket_client.remove_label(item.repo, item.ticket_id, Labels.STOP)
+
+        # Kill any running subprocess for this issue
+        if self.kill_process(key):
+            logger.info(f"STOP: Killed running subprocess for {key}")
+
+        # Remove implementing label
+        self.ticket_client.remove_label(item.repo, item.ticket_id, Labels.IMPLEMENTING)
+        logger.info(f"STOP: Removed implementing label from {key}")
+
+        # Clear running labels tracking
+        with self._running_labels_lock:
+            self._running_labels.pop(key, None)
+
+        # Clear in-progress tracking so issue can be re-processed
+        with self._in_progress_lock:
+            self._in_progress.pop(key, None)
 
     def _clear_kiln_content(self, item: TicketItem) -> None:
         """Clear kiln-generated content from an issue's body.
