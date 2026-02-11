@@ -46,6 +46,8 @@ jobs:
           # Convert markdown to Slack mrkdwn format
           convert_to_mrkdwn() {
             local text="$1"
+            # Strip carriage returns (GitHub API returns \r\n line endings)
+            text=$(printf '%s' "$text" | tr -d '\r')
             # Strip "What's Changed" section and everything after it
             text=$(echo "$text" | sed '/^## What'\''s Changed/,$d')
             # Remove trailing blank lines
