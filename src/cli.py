@@ -565,9 +565,9 @@ def find_claude_sessions(
 ) -> Path | None:
     """Find Claude session directory for a given issue.
 
-    Claude stores session files at ~/.claude/projects/<path-hash>/sessions/*.jsonl
+    Claude stores session files at ~/.claude/projects/<path-hash>/*.jsonl
     where path-hash is derived from the working directory. This function locates
-    the sessions directory for a specific issue by calculating the expected
+    the project directory for a specific issue by calculating the expected
     worktree path and searching for matching session files.
 
     Args:
@@ -578,7 +578,7 @@ def find_claude_sessions(
         issue_number: Issue number
 
     Returns:
-        Path to sessions directory containing .jsonl files, or None if not found
+        Path to project directory containing .jsonl session files, or None if not found
     """
     # Calculate expected worktree name pattern
     # Pattern: {owner}_{repo}-issue-{issue_number}
@@ -594,8 +594,9 @@ def find_claude_sessions(
     # directory name. We need to search for a projects directory that corresponds
     # to our worktree path.
     #
-    # The path in Claude is stored as: ~/.claude/projects/<escaped-path>/sessions/
+    # The path in Claude is stored as: ~/.claude/projects/<escaped-path>/
     # where <escaped-path> is the absolute path with / replaced by other characters
+    # Session files are stored directly in this directory (no sessions/ subdirectory).
     #
     # Since we don't know the exact escaping mechanism, we search for directories
     # that contain session files and whose path matches our worktree path pattern.
@@ -603,10 +604,6 @@ def find_claude_sessions(
     # Search all project directories for one that matches our worktree
     for project_dir in claude_projects.iterdir():
         if not project_dir.is_dir():
-            continue
-
-        sessions_dir = project_dir / "sessions"
-        if not sessions_dir.exists() or not sessions_dir.is_dir():
             continue
 
         # Check if this project directory name contains our worktree path pattern
@@ -617,10 +614,10 @@ def find_claude_sessions(
         # The project name is an encoded form of the absolute path
         # Check if the worktree name appears in the encoded path
         if worktree_name in project_name:
-            # Verify there are actual session files
-            session_files = list(sessions_dir.glob("*.jsonl"))
+            # Verify there are actual session files directly in project_dir
+            session_files = list(project_dir.glob("*.jsonl"))
             if session_files:
-                return sessions_dir
+                return project_dir
 
     # Alternative: search for any session files that might be associated with this issue
     # This handles edge cases where the encoding differs
@@ -629,18 +626,15 @@ def find_claude_sessions(
         if not project_dir.is_dir():
             continue
 
-        sessions_dir = project_dir / "sessions"
-        if not sessions_dir.exists() or not sessions_dir.is_dir():
-            continue
-
         project_name = project_dir.name
 
         # Check for the repo identifier pattern (owner_repo)
         # and issue number in the project path
         if repo_id in project_name and f"issue-{issue_number}" in project_name:
-            session_files = list(sessions_dir.glob("*.jsonl"))
+            # Session files are stored directly in project_dir (no sessions/ subdirectory)
+            session_files = list(project_dir.glob("*.jsonl"))
             if session_files:
-                return sessions_dir
+                return project_dir
 
     return None
 

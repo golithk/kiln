@@ -730,12 +730,12 @@ class TestFindClaudeSessions:
 
         # Create a project directory matching the worktree pattern
         # Worktree path would be: tmp_path/worktrees/owner_repo-issue-123
+        # Session files are stored directly in project_dir (no sessions/ subdirectory)
         project_dir = claude_projects / "some-hash-owner_repo-issue-123-encoded"
-        sessions_dir = project_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
+        project_dir.mkdir(parents=True)
 
-        # Create a session file
-        (sessions_dir / "abc123.jsonl").write_text('{"test": "data"}')
+        # Create a session file directly in project_dir
+        (project_dir / "abc123.jsonl").write_text('{"test": "data"}')
 
         with patch.object(Path, "home", return_value=fake_home):
             result = find_claude_sessions(
@@ -747,7 +747,7 @@ class TestFindClaudeSessions:
             )
 
         assert result is not None
-        assert result == sessions_dir
+        assert result == project_dir
         assert (result / "abc123.jsonl").exists()
 
     def test_returns_none_when_no_sessions(self, tmp_path, monkeypatch):
@@ -804,10 +804,10 @@ class TestFindClaudeSessions:
         claude_projects = fake_home / ".claude" / "projects"
 
         # Create a project directory matching the workspaces pattern
+        # Session files are stored directly in project_dir (no sessions/ subdirectory)
         project_dir = claude_projects / "hash-myorg_myrepo-issue-42-path"
-        sessions_dir = project_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-        (sessions_dir / "session123.jsonl").write_text('{"data": "test"}')
+        project_dir.mkdir(parents=True)
+        (project_dir / "session123.jsonl").write_text('{"data": "test"}')
 
         with patch.object(Path, "home", return_value=fake_home):
             result = find_claude_sessions(
@@ -819,7 +819,7 @@ class TestFindClaudeSessions:
             )
 
         assert result is not None
-        assert result.name == "sessions"
+        assert result == project_dir
 
     def test_skips_directories_without_session_files(self, tmp_path, monkeypatch):
         """Test that directories without .jsonl files are skipped."""
@@ -830,11 +830,11 @@ class TestFindClaudeSessions:
         fake_home = tmp_path / "fake_home"
         claude_projects = fake_home / ".claude" / "projects"
 
-        # Create a matching project directory but with empty sessions folder
+        # Create a matching project directory but with no session files
+        # Session files would be stored directly in project_dir (no sessions/ subdirectory)
         project_dir = claude_projects / "path-owner_repo-issue-123-hash"
-        sessions_dir = project_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
-        # No .jsonl files
+        project_dir.mkdir(parents=True)
+        # No .jsonl files in project_dir
 
         with patch.object(Path, "home", return_value=fake_home):
             result = find_claude_sessions(
@@ -856,17 +856,16 @@ class TestFindClaudeSessions:
         fake_home = tmp_path / "fake_home"
         claude_projects = fake_home / ".claude" / "projects"
 
-        # Create non-matching project directory with sessions
+        # Create non-matching project directory with session files
+        # Session files are stored directly in project_dir (no sessions/ subdirectory)
         other_project = claude_projects / "other-project-different-repo"
-        other_sessions = other_project / "sessions"
-        other_sessions.mkdir(parents=True)
-        (other_sessions / "other.jsonl").write_text('{"other": "data"}')
+        other_project.mkdir(parents=True)
+        (other_project / "other.jsonl").write_text('{"other": "data"}')
 
-        # Create matching project directory with sessions
+        # Create matching project directory with session files
         matching_project = claude_projects / "path-test_repo-issue-456-hash"
-        matching_sessions = matching_project / "sessions"
-        matching_sessions.mkdir(parents=True)
-        (matching_sessions / "correct.jsonl").write_text('{"correct": "data"}')
+        matching_project.mkdir(parents=True)
+        (matching_project / "correct.jsonl").write_text('{"correct": "data"}')
 
         with patch.object(Path, "home", return_value=fake_home):
             result = find_claude_sessions(
@@ -878,7 +877,7 @@ class TestFindClaudeSessions:
             )
 
         assert result is not None
-        assert result == matching_sessions
+        assert result == matching_project
         assert (result / "correct.jsonl").exists()
 
 
