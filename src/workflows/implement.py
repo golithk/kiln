@@ -433,7 +433,9 @@ def create_draft_pr(
 
     def create_pr() -> str:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            result = subprocess.run(
+                cmd, cwd=workspace_path, capture_output=True, text=True, check=True
+            )
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
             error_output = (e.stderr or "").lower()
