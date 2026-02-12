@@ -274,7 +274,7 @@ Description of hotfix issue.
         # Setup workflow runner to capture the context
         captured_context = None
 
-        def capture_workflow_execute(ctx, config):
+        def capture_workflow_execute(ctx, config, validation_manager=None):
             nonlocal captured_context
             captured_context = ctx
 
@@ -313,7 +313,7 @@ This issue has a parent issue with an open PR.
         # Setup workflow runner to capture the context
         captured_context = None
 
-        def capture_workflow_execute(ctx, config):
+        def capture_workflow_execute(ctx, config, validation_manager=None):
             nonlocal captured_context
             captured_context = ctx
 
@@ -356,7 +356,7 @@ This issue has a parent issue with an open PR.
 
         captured_context = None
 
-        def capture_workflow_execute(ctx, config):
+        def capture_workflow_execute(ctx, config, validation_manager=None):
             nonlocal captured_context
             captured_context = ctx
 

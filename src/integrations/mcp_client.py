@@ -130,10 +130,13 @@ async def _test_http_server(
             error="missing 'url' field",
         )
 
-    # Build headers from env if present (common pattern for auth tokens)
+    # Build headers - prefer direct headers field, fall back to env extraction
     headers: dict[str, str] = {}
-    if "env" in server_config and isinstance(server_config["env"], dict):
-        # Look for common auth header patterns
+    if "headers" in server_config and isinstance(server_config["headers"], dict):
+        # Use headers field directly (preferred)
+        headers = dict(server_config["headers"])
+    elif "env" in server_config and isinstance(server_config["env"], dict):
+        # Fall back to env extraction for backward compatibility
         env = server_config["env"]
         if "AUTHORIZATION" in env:
             headers["Authorization"] = env["AUTHORIZATION"]

@@ -185,6 +185,155 @@ class TestMCPConfigManagerLoadConfig:
 
 
 @pytest.mark.unit
+class TestMCPConfigManagerGetSubstitutedServers:
+    """Tests for MCPConfigManager.get_substituted_mcp_servers()."""
+
+    def test_get_substituted_mcp_servers_no_config(self):
+        """Test returns empty dict when no config exists."""
+        manager = MCPConfigManager(config_path="/nonexistent/mcp.json")
+
+        result = manager.get_substituted_mcp_servers()
+
+        assert result == {}
+
+    def test_get_substituted_mcp_servers_empty_servers(self):
+        """Test returns empty dict when mcpServers is empty."""
+        config_data = {"mcpServers": {}}
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            manager = MCPConfigManager(config_path=config_path)
+
+            result = manager.get_substituted_mcp_servers()
+
+            assert result == {}
+        finally:
+            Path(config_path).unlink()
+
+    def test_get_substituted_mcp_servers_with_token(self):
+        """Test token substitution in mcp_servers."""
+        config_data = {
+            "mcpServers": {
+                "auth-server": {
+                    "url": "https://api.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${AZURE_BEARER_TOKEN}"},
+                }
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            mock_client = MagicMock(spec=AzureOAuthClient)
+            mock_client.get_token.return_value = "substituted-token-123"
+
+            manager = MCPConfigManager(
+                azure_client=mock_client,
+                config_path=config_path,
+            )
+
+            result = manager.get_substituted_mcp_servers()
+
+            assert "auth-server" in result
+            assert (
+                result["auth-server"]["headers"]["Authorization"] == "Bearer substituted-token-123"
+            )
+            mock_client.get_token.assert_called_once()
+        finally:
+            Path(config_path).unlink()
+
+    def test_get_substituted_mcp_servers_no_azure_client(self):
+        """Test returns unsubstituted config when no Azure client."""
+        config_data = {
+            "mcpServers": {
+                "server": {
+                    "url": "https://api.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${AZURE_BEARER_TOKEN}"},
+                }
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            manager = MCPConfigManager(config_path=config_path, azure_client=None)
+
+            result = manager.get_substituted_mcp_servers()
+
+            # Placeholder should remain when no Azure client
+            assert result["server"]["headers"]["Authorization"] == "Bearer ${AZURE_BEARER_TOKEN}"
+        finally:
+            Path(config_path).unlink()
+
+    def test_get_substituted_mcp_servers_without_placeholders(self):
+        """Test config without placeholders returns as-is."""
+        config_data = {
+            "mcpServers": {
+                "local-server": {
+                    "command": "npx",
+                    "args": ["-y", "@test/mcp-server"],
+                }
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            manager = MCPConfigManager(config_path=config_path)
+
+            result = manager.get_substituted_mcp_servers()
+
+            assert result["local-server"]["command"] == "npx"
+            assert result["local-server"]["args"] == ["-y", "@test/mcp-server"]
+        finally:
+            Path(config_path).unlink()
+
+    def test_get_substituted_mcp_servers_multiple_servers(self):
+        """Test substitution works across multiple servers."""
+        config_data = {
+            "mcpServers": {
+                "server1": {
+                    "url": "https://api1.example.com/mcp",
+                    "headers": {"Authorization": "Bearer ${AZURE_BEARER_TOKEN}"},
+                },
+                "server2": {
+                    "url": "https://api2.example.com/mcp",
+                    "env": {"TOKEN": "${AZURE_BEARER_TOKEN}"},
+                },
+            }
+        }
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(config_data, f)
+            config_path = f.name
+
+        try:
+            mock_client = MagicMock(spec=AzureOAuthClient)
+            mock_client.get_token.return_value = "multi-server-token"
+
+            manager = MCPConfigManager(
+                azure_client=mock_client,
+                config_path=config_path,
+            )
+
+            result = manager.get_substituted_mcp_servers()
+
+            assert result["server1"]["headers"]["Authorization"] == "Bearer multi-server-token"
+            assert result["server2"]["env"]["TOKEN"] == "multi-server-token"
+        finally:
+            Path(config_path).unlink()
+
+
+@pytest.mark.unit
 class TestMCPConfigManagerHasConfig:
     """Tests for MCPConfigManager.has_config()."""
 

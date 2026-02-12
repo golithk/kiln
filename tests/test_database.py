@@ -183,6 +183,7 @@ class TestDatabase:
         parsed = datetime.fromisoformat(raw_timestamp)
         assert isinstance(parsed, datetime)
 
+    @pytest.mark.timing
     def test_update_issue_state_updates_timestamp(self, temp_db):
         """Test that updating an issue also updates the timestamp."""
         import time
@@ -206,6 +207,7 @@ class TestDatabase:
         states = temp_db.get_all_issue_states()
         assert len(states) == 3
 
+    @pytest.mark.timing
     def test_get_all_issue_states_ordered_by_last_updated(self, temp_db):
         """Test that get_all_issue_states returns issues ordered by last_updated DESC."""
         import time
@@ -373,6 +375,7 @@ class TestProcessingCommentsTracking:
         assert row["comment_id"] == "IC_abc123"
         assert row["started_at"] is not None
 
+    @pytest.mark.timing
     def test_add_processing_comment_replaces_existing(self, temp_db):
         """Test that adding same comment updates timestamp."""
         import time
@@ -447,6 +450,7 @@ class TestProcessingCommentsTracking:
         stale = temp_db.get_stale_processing_comments(stale_threshold_seconds=3600)
         assert len(stale) == 0
 
+    @pytest.mark.timing
     def test_get_stale_processing_comments_custom_threshold(self, temp_db):
         """Test custom threshold for staleness."""
         import time

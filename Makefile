@@ -1,4 +1,4 @@
-.PHONY: lint lint-fix format format-check test setup check-config check-orphans check-dead-code check-all
+.PHONY: lint lint-fix format format-check test test-parallel test-timing setup check-config check-orphans check-dead-code check-all
 
 # Ensure venv exists and has dev deps
 setup:
@@ -21,9 +21,18 @@ format: setup
 format-check: setup
 	.venv/bin/ruff format --check src/ tests/
 
-# Run tests
+# Run tests (parallel + timing sequentially)
 test: setup
-	.venv/bin/pytest tests/ -v
+	.venv/bin/pytest tests/ -m "not timing" -n auto --dist loadscope -v
+	.venv/bin/pytest tests/ -m "timing" -v
+
+# Run only parallel-safe tests
+test-parallel: setup
+	.venv/bin/pytest tests/ -m "not timing" -n auto --dist loadscope -v
+
+# Run only timing-sensitive tests
+test-timing: setup
+	.venv/bin/pytest tests/ -m "timing" -v
 
 # Proactive code checks
 check-config:

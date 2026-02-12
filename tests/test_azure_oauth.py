@@ -483,6 +483,7 @@ class TestAzureOAuthClientClearToken:
 
 
 @pytest.mark.unit
+@pytest.mark.timing
 class TestAzureOAuthClientThreadSafety:
     """Tests for AzureOAuthClient thread safety."""
 

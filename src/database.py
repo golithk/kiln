@@ -35,6 +35,28 @@ class ProjectMetadata:
 
 
 @dataclass
+class MergeQueueEntry:
+    """
+    Represents an entry in the Dependabot auto-merge queue.
+
+    Attributes:
+        repo: Repository name (e.g., "github.com/owner/repo")
+        pr_number: Pull request number
+        position: Queue position (0 = first in queue)
+        status: Current status ('queued', 'merging', 'waiting_rebase', 'waiting_ci')
+        queued_at: Timestamp when the PR was added to the queue
+        last_checked: Timestamp of the last status check (None if never checked)
+    """
+
+    repo: str
+    pr_number: int
+    position: int
+    status: str  # 'queued', 'merging', 'waiting_rebase', 'waiting_ci'
+    queued_at: datetime
+    last_checked: datetime | None = None
+
+
+@dataclass
 class RunRecord:
     """
     Represents a single workflow run for an issue.
@@ -235,6 +257,24 @@ class Database:
                         started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (repo, issue_number, comment_id)
                     )
+                """)
+
+                # Create merge_queue table for Dependabot auto-merge queue tracking
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS merge_queue (
+                        repo TEXT NOT NULL,
+                        pr_number INTEGER NOT NULL,
+                        position INTEGER NOT NULL,
+                        status TEXT NOT NULL,
+                        queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        last_checked TIMESTAMP,
+                        PRIMARY KEY (repo, pr_number)
+                    )
+                """)
+                # Create index for efficient querying by repo and position
+                conn.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_merge_queue_repo_position
+                    ON merge_queue (repo, position)
                 """)
             self._initialized = True
 
@@ -760,6 +800,169 @@ class Database:
         )
 
         return [(row["repo"], row["issue_number"], row["comment_id"]) for row in cursor.fetchall()]
+
+    def add_to_merge_queue(self, repo: str, pr_number: int, position: int) -> None:
+        """Add a PR to the merge queue.
+
+        Args:
+            repo: Repository name (e.g., "github.com/owner/repo")
+            pr_number: Pull request number
+            position: Queue position (0 = first in queue)
+        """
+        conn = self._get_conn()
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO merge_queue
+                (repo, pr_number, position, status, queued_at, last_checked)
+                VALUES (?, ?, ?, 'queued', CURRENT_TIMESTAMP, NULL)
+                """,
+                (repo, pr_number, position),
+            )
+
+    def get_merge_queue(self, repo: str) -> list[MergeQueueEntry]:
+        """Get all entries in the merge queue for a repository, ordered by position.
+
+        Args:
+            repo: Repository name (e.g., "github.com/owner/repo")
+
+        Returns:
+            List of MergeQueueEntry objects, ordered by position ascending
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT repo, pr_number, position, status, queued_at, last_checked
+            FROM merge_queue
+            WHERE repo = ?
+            ORDER BY position ASC
+            """,
+            (repo,),
+        )
+
+        entries = []
+        for row in cursor.fetchall():
+            entries.append(
+                MergeQueueEntry(
+                    repo=row["repo"],
+                    pr_number=row["pr_number"],
+                    position=row["position"],
+                    status=row["status"],
+                    queued_at=datetime.fromisoformat(row["queued_at"]),
+                    last_checked=datetime.fromisoformat(row["last_checked"])
+                    if row["last_checked"]
+                    else None,
+                )
+            )
+        return entries
+
+    def update_merge_queue_status(
+        self, repo: str, pr_number: int, status: str, update_last_checked: bool = True
+    ) -> None:
+        """Update the status of a PR in the merge queue.
+
+        Args:
+            repo: Repository name (e.g., "github.com/owner/repo")
+            pr_number: Pull request number
+            status: New status ('queued', 'merging', 'waiting_rebase', 'waiting_ci')
+            update_last_checked: Whether to update the last_checked timestamp (default True)
+        """
+        conn = self._get_conn()
+        with conn:
+            if update_last_checked:
+                conn.execute(
+                    """
+                    UPDATE merge_queue
+                    SET status = ?, last_checked = CURRENT_TIMESTAMP
+                    WHERE repo = ? AND pr_number = ?
+                    """,
+                    (status, repo, pr_number),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE merge_queue
+                    SET status = ?
+                    WHERE repo = ? AND pr_number = ?
+                    """,
+                    (status, repo, pr_number),
+                )
+
+    def remove_from_merge_queue(self, repo: str, pr_number: int) -> None:
+        """Remove a PR from the merge queue.
+
+        Also reorders remaining entries to maintain contiguous positions.
+
+        Args:
+            repo: Repository name (e.g., "github.com/owner/repo")
+            pr_number: Pull request number
+        """
+        conn = self._get_conn()
+        with conn:
+            # Get the position of the PR being removed
+            cursor = conn.execute(
+                "SELECT position FROM merge_queue WHERE repo = ? AND pr_number = ?",
+                (repo, pr_number),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return
+
+            removed_position = row["position"]
+
+            # Delete the entry
+            conn.execute(
+                "DELETE FROM merge_queue WHERE repo = ? AND pr_number = ?",
+                (repo, pr_number),
+            )
+
+            # Decrement positions for all entries after the removed one
+            conn.execute(
+                """
+                UPDATE merge_queue
+                SET position = position - 1
+                WHERE repo = ? AND position > ?
+                """,
+                (repo, removed_position),
+            )
+
+    def get_merge_queue_by_status(self, repo: str, status: str) -> MergeQueueEntry | None:
+        """Get the first entry in the merge queue with a specific status.
+
+        Args:
+            repo: Repository name (e.g., "github.com/owner/repo")
+            status: Status to filter by ('queued', 'merging', 'waiting_rebase', 'waiting_ci')
+
+        Returns:
+            MergeQueueEntry if found, None otherwise
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT repo, pr_number, position, status, queued_at, last_checked
+            FROM merge_queue
+            WHERE repo = ? AND status = ?
+            ORDER BY position ASC
+            LIMIT 1
+            """,
+            (repo, status),
+        )
+
+        row = cursor.fetchone()
+        if row:
+            return MergeQueueEntry(
+                repo=row["repo"],
+                pr_number=row["pr_number"],
+                position=row["position"],
+                status=row["status"],
+                queued_at=datetime.fromisoformat(row["queued_at"]),
+                last_checked=datetime.fromisoformat(row["last_checked"])
+                if row["last_checked"]
+                else None,
+            )
+        return None
 
     def close(self) -> None:
         """

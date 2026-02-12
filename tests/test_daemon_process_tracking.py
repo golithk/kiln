@@ -213,6 +213,7 @@ class TestKillProcess:
 
 
 @pytest.mark.integration
+@pytest.mark.timing
 class TestProcessTrackingThreadSafety:
     """Tests for thread safety of process tracking methods."""
 

@@ -1,3 +1,15 @@
+# ⚠️ DEPRECATED
+
+This command is deprecated as of 2026-02-10. PR creation is now handled programmatically in `src/workflows/implement.py`.
+
+This file is kept for reference only. The programmatic implementation:
+- Extracts plan content using regex (no LLM interpretation)
+- Creates draft PR with exact plan content
+- Validates checkboxes before proceeding
+- Provides clear error messages for missing markers
+
+---
+
 # Prepare Implementation (Create Draft PR with Plan)
 
 You are running in **headless, non-interactive mode** as part of an automated workflow.

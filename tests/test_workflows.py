@@ -7,10 +7,17 @@ import pytest
 from src.ticket_clients.base import NetworkError
 from src.workflows.base import WorkflowContext
 from src.workflows.implement import (
+    PLAN_END_MARKER,
+    PLAN_LEGACY_END_MARKER,
+    PLAN_START_MARKER,
     ImplementWorkflow,
     _retry_with_backoff,
+    collapse_plan_in_issue,
     count_checkboxes,
     count_tasks,
+    create_draft_pr,
+    extract_plan_from_body,
+    extract_plan_from_issue,
 )
 from src.workflows.plan import PlanWorkflow
 from src.workflows.prepare import PrepareWorkflow
@@ -452,6 +459,22 @@ class TestPrepareWorkflow:
         assert "parent issue" not in prompts[1]
         assert "parent branch" not in prompts[1]
 
+    def test_prepare_workflow_includes_git_c_instruction(self):
+        """Test that worktree prompt instructs Claude to use git -C for correct repo."""
+        ctx = WorkflowContext(
+            repo="github.com/owner/repo",
+            issue_number=42,
+            issue_title="Test Issue",
+            workspace_path="/tmp/worktrees",
+            issue_body="Body text",
+        )
+        workflow = PrepareWorkflow()
+        prompts = workflow.init(ctx)
+
+        # Should instruct to run from inside the cloned repo
+        assert "git -C /tmp/worktrees/owner_repo worktree add" in prompts[1]
+        assert "MUST run the git worktree command from inside the cloned repo" in prompts[1]
+
 
 @pytest.mark.unit
 class TestCountTasks:
@@ -626,6 +649,898 @@ class TestCountCheckboxes:
 
 
 @pytest.mark.unit
+class TestExtractPlanFromBody:
+    """Tests for extract_plan_from_body() helper function."""
+
+    def test_extracts_plan_with_new_markers(self):
+        """Test extraction with new-style end marker."""
+        body = f"""Some description here.
+
+---
+
+{PLAN_START_MARKER}
+# Implementation Plan
+
+## TASK 1: First task
+- [ ] Subtask A
+- [ ] Subtask B
+{PLAN_END_MARKER}
+"""
+        result = extract_plan_from_body(body)
+        assert result is not None
+        assert "# Implementation Plan" in result
+        assert "- [ ] Subtask A" in result
+        assert "- [ ] Subtask B" in result
+        assert PLAN_START_MARKER not in result
+        assert PLAN_END_MARKER not in result
+
+    def test_extracts_plan_with_legacy_end_marker(self):
+        """Test extraction with legacy <!-- /kiln --> end marker."""
+        body = f"""Some description here.
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+- [ ] Task 2
+{PLAN_LEGACY_END_MARKER}
+"""
+        result = extract_plan_from_body(body)
+        assert result is not None
+        assert "# Plan" in result
+        assert "- [ ] Task 1" in result
+        assert PLAN_LEGACY_END_MARKER not in result
+
+    def test_returns_none_when_no_start_marker(self):
+        """Test that None is returned when start marker is missing."""
+        body = """# Implementation Plan
+
+## TASK 1: Some task
+- [ ] Do something
+"""
+        result = extract_plan_from_body(body)
+        assert result is None
+
+    def test_handles_plan_without_end_marker(self):
+        """Test extraction when end marker is missing (takes everything after start)."""
+        body = f"""Description.
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+- [ ] Task 2
+
+Some trailing content
+"""
+        result = extract_plan_from_body(body)
+        assert result is not None
+        assert "# Plan" in result
+        assert "- [ ] Task 1" in result
+        assert "Some trailing content" in result
+
+    def test_extracts_empty_plan(self):
+        """Test extraction when plan section is empty."""
+        body = f"""{PLAN_START_MARKER}
+{PLAN_END_MARKER}"""
+        result = extract_plan_from_body(body)
+        # Empty string after strip
+        assert result == ""
+
+    def test_extracts_plan_with_complex_content(self):
+        """Test extraction with complex markdown including code blocks."""
+        body = f"""Issue description.
+
+{PLAN_START_MARKER}
+# Implementation Plan
+
+## TASK 1: Add helper function
+
+```python
+def helper():
+    pass
+```
+
+- [ ] Create function
+- [ ] Add tests
+{PLAN_END_MARKER}
+"""
+        result = extract_plan_from_body(body)
+        assert result is not None
+        assert "```python" in result
+        assert "def helper():" in result
+        assert "- [ ] Create function" in result
+
+    def test_prefers_new_end_marker_over_legacy(self):
+        """Test that new end marker is preferred when both are present."""
+        body = f"""{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+{PLAN_END_MARKER}
+More content after plan
+{PLAN_LEGACY_END_MARKER}
+"""
+        result = extract_plan_from_body(body)
+        assert result is not None
+        assert "# Plan" in result
+        assert "- [ ] Task 1" in result
+        # Should NOT include content after PLAN_END_MARKER
+        assert "More content after plan" not in result
+
+
+@pytest.mark.unit
+class TestExtractPlanFromIssue:
+    """Tests for extract_plan_from_issue() helper function."""
+
+    def test_extracts_plan_and_title_successfully(self):
+        """Test successful extraction of plan and title from issue."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            {
+                "title": "Add new feature",
+                "body": f"""Description.
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+{PLAN_END_MARKER}
+""",
+            }
+        )
+
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            plan, title = extract_plan_from_issue("github.com/owner/repo", 123)
+
+        assert plan is not None
+        assert "# Plan" in plan
+        assert "- [ ] Task 1" in plan
+        assert title == "Add new feature"
+
+        # Verify gh command was called correctly
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert "gh" in call_args
+        assert "issue" in call_args
+        assert "view" in call_args
+        assert "https://github.com/owner/repo/issues/123" in call_args
+
+    def test_returns_none_when_no_plan_in_issue(self):
+        """Test that plan is None when issue has no plan markers."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            {
+                "title": "Simple issue",
+                "body": "Just a description without any plan.",
+            }
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            plan, title = extract_plan_from_issue("github.com/owner/repo", 456)
+
+        assert plan is None
+        assert title == "Simple issue"
+
+    def test_handles_empty_body(self):
+        """Test handling of issue with empty body."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            {
+                "title": "Empty body issue",
+                "body": "",
+            }
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            plan, title = extract_plan_from_issue("github.com/owner/repo", 789)
+
+        assert plan is None
+        assert title == "Empty body issue"
+
+    def test_handles_null_body(self):
+        """Test handling of issue with null body."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = json.dumps(
+            {
+                "title": "Null body issue",
+                "body": None,
+            }
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            plan, title = extract_plan_from_issue("github.com/owner/repo", 101)
+
+        assert plan is None
+        assert title == "Null body issue"
+
+    def test_raises_runtime_error_on_subprocess_failure(self):
+        """Test that RuntimeError is raised when gh command fails."""
+        from unittest.mock import patch
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["gh"],
+                stderr="Could not resolve to a Repository",
+            )
+            with pytest.raises(RuntimeError, match="Failed to fetch issue"):
+                extract_plan_from_issue("github.com/owner/repo", 999)
+
+    def test_raises_runtime_error_on_json_parse_failure(self):
+        """Test that RuntimeError is raised when JSON parsing fails."""
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.stdout = "not valid json"
+
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(RuntimeError, match="Failed to parse issue response"):
+                extract_plan_from_issue("github.com/owner/repo", 111)
+
+
+@pytest.mark.unit
+class TestCreateDraftPr:
+    """Tests for create_draft_pr() helper function."""
+
+    def test_creates_pr_with_plan(self, tmp_path):
+        """Test successful PR creation with plan content."""
+        from unittest.mock import MagicMock, patch
+
+        # Mock subprocess calls: empty commit, push, pr create
+        mock_results = [
+            MagicMock(),  # git commit
+            MagicMock(),  # git push
+            MagicMock(stdout="https://github.com/owner/repo/pull/42\n"),  # gh pr create
+        ]
+        call_idx = {"value": 0}
+
+        def mock_run(*args, **kwargs):
+            result = mock_results[call_idx["value"]]
+            call_idx["value"] += 1
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run) as mock_subprocess:
+            pr_number = create_draft_pr(
+                str(tmp_path),
+                "github.com/owner/repo",
+                123,
+                "Test Issue",
+                "# Plan\n- [ ] Task 1\n- [ ] Task 2",
+                None,
+            )
+
+        assert pr_number == 42
+        assert mock_subprocess.call_count == 3
+
+        # Verify git commit call
+        commit_call = mock_subprocess.call_args_list[0]
+        assert "git" in commit_call[0][0]
+        assert "commit" in commit_call[0][0]
+        assert "--allow-empty" in commit_call[0][0]
+        assert "feat: begin implementation for #123" in commit_call[0][0]
+
+        # Verify git push call
+        push_call = mock_subprocess.call_args_list[1]
+        assert "git" in push_call[0][0]
+        assert "push" in push_call[0][0]
+        assert "-u" in push_call[0][0]
+        assert "origin" in push_call[0][0]
+
+        # Verify gh pr create call
+        pr_call = mock_subprocess.call_args_list[2]
+        assert "gh" in pr_call[0][0]
+        assert "pr" in pr_call[0][0]
+        assert "create" in pr_call[0][0]
+        assert "--draft" in pr_call[0][0]
+
+    def test_includes_base_branch_when_provided(self, tmp_path):
+        """Test that --base flag is included when base_branch is provided."""
+        from unittest.mock import MagicMock, patch
+
+        mock_results = [
+            MagicMock(),  # git commit
+            MagicMock(),  # git push
+            MagicMock(stdout="https://github.com/owner/repo/pull/42\n"),  # gh pr create
+        ]
+        call_idx = {"value": 0}
+
+        def mock_run(*args, **kwargs):
+            result = mock_results[call_idx["value"]]
+            call_idx["value"] += 1
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run) as mock_subprocess:
+            create_draft_pr(
+                str(tmp_path),
+                "github.com/owner/repo",
+                123,
+                "Test Issue",
+                "# Plan",
+                "feature-branch",
+            )
+
+        # Verify --base flag is in the gh pr create call
+        pr_call = mock_subprocess.call_args_list[2]
+        cmd = pr_call[0][0]
+        assert "--base" in cmd
+        assert "feature-branch" in cmd
+
+    def test_pr_body_includes_closes_keyword(self, tmp_path):
+        """Test that PR body includes 'Closes #N' keyword."""
+        from unittest.mock import MagicMock, patch
+
+        captured_body = {"value": None}
+
+        def mock_run(cmd, **kwargs):
+            if "gh" in cmd and "pr" in cmd and "create" in cmd:
+                # Find --body and capture the next arg
+                for i, arg in enumerate(cmd):
+                    if arg == "--body":
+                        captured_body["value"] = cmd[i + 1]
+                        break
+                return MagicMock(stdout="https://github.com/owner/repo/pull/99\n")
+            return MagicMock()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            create_draft_pr(
+                str(tmp_path),
+                "github.com/owner/repo",
+                456,
+                "Test Issue",
+                "# Plan\n- [ ] Task",
+                None,
+            )
+
+        assert captured_body["value"] is not None
+        assert "Closes #456" in captured_body["value"]
+        assert "# Plan" in captured_body["value"]
+        assert "- [ ] Task" in captured_body["value"]
+
+    def test_pr_body_includes_base_branch_note(self, tmp_path):
+        """Test that PR body includes note about base branch when provided."""
+        from unittest.mock import MagicMock, patch
+
+        captured_body = {"value": None}
+
+        def mock_run(cmd, **kwargs):
+            if "gh" in cmd and "pr" in cmd and "create" in cmd:
+                for i, arg in enumerate(cmd):
+                    if arg == "--body":
+                        captured_body["value"] = cmd[i + 1]
+                        break
+                return MagicMock(stdout="https://github.com/owner/repo/pull/99\n")
+            return MagicMock()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            create_draft_pr(
+                str(tmp_path),
+                "github.com/owner/repo",
+                123,
+                "Test Issue",
+                "# Plan",
+                "my-feature-branch",
+            )
+
+        assert captured_body["value"] is not None
+        assert "my-feature-branch" in captured_body["value"]
+        assert "not the default branch" in captured_body["value"]
+
+    def test_raises_runtime_error_on_commit_failure(self, tmp_path):
+        """Test that RuntimeError is raised when git commit fails."""
+        from unittest.mock import patch
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["git"],
+                stderr="error: unable to create commit",
+            )
+            with pytest.raises(RuntimeError, match="Failed to create empty commit"):
+                create_draft_pr(
+                    str(tmp_path),
+                    "github.com/owner/repo",
+                    123,
+                    "Test Issue",
+                    "# Plan",
+                    None,
+                )
+
+    def test_raises_runtime_error_on_push_failure(self, tmp_path):
+        """Test that RuntimeError is raised when git push fails."""
+        from unittest.mock import MagicMock, patch
+
+        call_count = {"value": 0}
+
+        def mock_run(cmd, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                return MagicMock()  # commit succeeds
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["git"],
+                stderr="error: failed to push",
+            )
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="Failed to push to remote"):
+                create_draft_pr(
+                    str(tmp_path),
+                    "github.com/owner/repo",
+                    123,
+                    "Test Issue",
+                    "# Plan",
+                    None,
+                )
+
+    def test_raises_runtime_error_on_pr_create_failure(self, tmp_path):
+        """Test that RuntimeError is raised when gh pr create fails."""
+        from unittest.mock import MagicMock, patch
+
+        call_count = {"value": 0}
+
+        def mock_run(cmd, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] <= 2:
+                return MagicMock()  # commit and push succeed
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["gh"],
+                stderr="error: pull request already exists",
+            )
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="Failed to create draft PR"):
+                create_draft_pr(
+                    str(tmp_path),
+                    "github.com/owner/repo",
+                    123,
+                    "Test Issue",
+                    "# Plan",
+                    None,
+                )
+
+    def test_retries_on_network_error(self, tmp_path):
+        """Test that PR creation is retried on network errors."""
+        from unittest.mock import MagicMock, patch
+
+        call_count = {"value": 0}
+
+        def mock_run(cmd, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] <= 2:
+                return MagicMock()  # commit and push succeed
+            if call_count["value"] <= 4:  # First 2 PR create attempts fail with network error
+                raise subprocess.CalledProcessError(
+                    returncode=1,
+                    cmd=["gh"],
+                    stderr="net/http: TLS handshake timeout",
+                )
+            return MagicMock(stdout="https://github.com/owner/repo/pull/42\n")
+
+        with (
+            patch("subprocess.run", side_effect=mock_run),
+            patch("src.workflows.implement.time.sleep"),  # Speed up test
+        ):
+            pr_number = create_draft_pr(
+                str(tmp_path),
+                "github.com/owner/repo",
+                123,
+                "Test Issue",
+                "# Plan",
+                None,
+            )
+
+        assert pr_number == 42
+        # commit (1) + push (1) + 3 pr create attempts (2 fail, 1 success)
+        assert call_count["value"] == 5
+
+    def test_parses_pr_number_from_various_url_formats(self, tmp_path):
+        """Test parsing PR number from different URL formats."""
+        from unittest.mock import MagicMock, patch
+
+        test_cases = [
+            ("https://github.com/owner/repo/pull/123\n", 123),
+            ("https://github.com/owner/repo/pull/456", 456),
+            ("https://github.com/owner/repo/pull/789/", 789),
+        ]
+
+        for url, expected_number in test_cases:
+            call_count = {"value": 0}
+            captured_url = url  # Capture in closure
+
+            def mock_run(cmd, captured=captured_url, counter=call_count, **kwargs):
+                counter["value"] += 1
+                if counter["value"] <= 2:
+                    return MagicMock()
+                return MagicMock(stdout=captured)
+
+            with patch("subprocess.run", side_effect=mock_run):
+                pr_number = create_draft_pr(
+                    str(tmp_path),
+                    "github.com/owner/repo",
+                    1,
+                    "Test",
+                    "Plan",
+                    None,
+                )
+
+            assert pr_number == expected_number, f"Failed for URL: {url}"
+
+
+@pytest.mark.unit
+class TestCollapsePlanInIssue:
+    """Tests for collapse_plan_in_issue() helper function."""
+
+    def test_collapses_plan_section_successfully(self):
+        """Test successful collapse of plan section."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        original_body = f"""Issue description.
+
+---
+
+{PLAN_START_MARKER}
+# Implementation Plan
+
+## TASK 1: First task
+- [ ] Subtask A
+- [ ] Subtask B
+{PLAN_END_MARKER}
+"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": original_body})
+
+        captured_body = {"value": None}
+
+        def mock_run(cmd, **kwargs):
+            if "view" in cmd:
+                return mock_view_result
+            if "edit" in cmd:
+                # Capture the new body
+                for i, arg in enumerate(cmd):
+                    if arg == "--body":
+                        captured_body["value"] = cmd[i + 1]
+                        break
+                return MagicMock()
+            return MagicMock()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        assert captured_body["value"] is not None
+        assert "<details>" in captured_body["value"]
+        assert "<summary><h2>Implementation Plan</h2></summary>" in captured_body["value"]
+        assert PLAN_START_MARKER in captured_body["value"]
+        assert "</details>" in captured_body["value"]
+
+    def test_skips_when_no_plan_marker(self):
+        """Test that function does nothing when no plan marker exists."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        original_body = "Just a simple issue without a plan."
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": original_body})
+
+        with patch("subprocess.run", return_value=mock_view_result) as mock_run:
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        # Only the view call should be made, not edit
+        assert mock_run.call_count == 1
+        assert "view" in mock_run.call_args[0][0]
+
+    def test_skips_when_already_collapsed(self):
+        """Test idempotency - does nothing if plan is already collapsed."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        already_collapsed = f"""Issue description.
+
+---
+
+<details>
+<summary><h2>Implementation Plan</h2></summary>
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+{PLAN_END_MARKER}
+
+</details>
+"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": already_collapsed})
+
+        with patch("subprocess.run", return_value=mock_view_result) as mock_run:
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        # Only the view call should be made, not edit
+        assert mock_run.call_count == 1
+        assert "view" in mock_run.call_args[0][0]
+
+    def test_skips_when_no_end_marker(self):
+        """Test that function does nothing when end marker is missing."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        body_without_end = f"""Issue description.
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+(no end marker)
+"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": body_without_end})
+
+        with patch("subprocess.run", return_value=mock_view_result) as mock_run:
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        # Only the view call should be made, not edit
+        assert mock_run.call_count == 1
+
+    def test_handles_legacy_end_marker(self):
+        """Test that function works with legacy <!-- /kiln --> end marker."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        original_body = f"""Issue description.
+
+{PLAN_START_MARKER}
+# Plan
+- [ ] Task 1
+{PLAN_LEGACY_END_MARKER}
+"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": original_body})
+
+        captured_body = {"value": None}
+
+        def mock_run(cmd, **kwargs):
+            if "view" in cmd:
+                return mock_view_result
+            if "edit" in cmd:
+                for i, arg in enumerate(cmd):
+                    if arg == "--body":
+                        captured_body["value"] = cmd[i + 1]
+                        break
+                return MagicMock()
+            return MagicMock()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        assert captured_body["value"] is not None
+        assert "<details>" in captured_body["value"]
+        assert PLAN_LEGACY_END_MARKER in captured_body["value"]
+
+    def test_raises_runtime_error_on_fetch_failure(self):
+        """Test that RuntimeError is raised when gh view fails."""
+        from unittest.mock import patch
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["gh"],
+                stderr="Could not resolve to an Issue",
+            )
+            with pytest.raises(RuntimeError, match="Failed to fetch issue"):
+                collapse_plan_in_issue("github.com/owner/repo", 999)
+
+    def test_raises_runtime_error_on_update_failure(self):
+        """Test that RuntimeError is raised when gh edit fails."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        original_body = f"""{PLAN_START_MARKER}
+# Plan
+- [ ] Task
+{PLAN_END_MARKER}"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": original_body})
+
+        call_count = {"value": 0}
+
+        def mock_run(cmd, **kwargs):
+            call_count["value"] += 1
+            if call_count["value"] == 1:
+                return mock_view_result
+            raise subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["gh"],
+                stderr="Permission denied",
+            )
+
+        with patch("subprocess.run", side_effect=mock_run):
+            with pytest.raises(RuntimeError, match="Failed to update issue"):
+                collapse_plan_in_issue("github.com/owner/repo", 123)
+
+    def test_uses_correct_repo_ref_format(self):
+        """Test that repo ref is correctly formatted for gh CLI."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        original_body = f"""{PLAN_START_MARKER}
+# Plan
+- [ ] Task
+{PLAN_END_MARKER}"""
+
+        mock_view_result = MagicMock()
+        mock_view_result.stdout = json.dumps({"body": original_body})
+
+        captured_repo_ref = {"value": None}
+
+        def mock_run(cmd, **kwargs):
+            if "view" in cmd:
+                return mock_view_result
+            if "edit" in cmd:
+                for i, arg in enumerate(cmd):
+                    if arg == "--repo":
+                        captured_repo_ref["value"] = cmd[i + 1]
+                        break
+                return MagicMock()
+            return MagicMock()
+
+        with patch("subprocess.run", side_effect=mock_run):
+            collapse_plan_in_issue("github.com/owner/repo", 123)
+
+        # For github.com, should use just owner/repo
+        assert captured_repo_ref["value"] == "owner/repo"
+
+
+@pytest.mark.unit
+class TestDirectToImplementFlow:
+    """Tests for direct-to-implement flow (auto-triggered planning when no plan exists)."""
+
+    def test_posts_comment_when_no_plan_exists(self):
+        """Test that execute() posts explanatory comment when no plan is found in issue."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from src.config import Config
+        from src.workflows.base import WorkflowContext
+
+        workflow = ImplementWorkflow()
+
+        mock_config = MagicMock(spec=Config)
+        mock_config.safety_allow_appended_tasks = 0
+
+        ctx = WorkflowContext(
+            repo="github.com/owner/test-repo",
+            issue_number=42,
+            issue_title="Test Issue",
+            workspace_path="/tmp/worktrees/test",
+        )
+
+        # No PR exists initially, then PR is created
+        pr_responses = [
+            None,  # Initial check
+            {"number": 42, "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done"},
+            {"number": 42, "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done"},
+        ]
+        call_count = {"value": 0}
+
+        def mock_get_pr(*_args, **_kwargs):
+            result = pr_responses[min(call_count["value"], len(pr_responses) - 1)]
+            call_count["value"] += 1
+            return result
+
+        # Track subprocess calls
+        subprocess_calls = []
+        issue_view_call_count = {"value": 0}
+
+        def mock_subprocess_run(cmd, **kwargs):
+            subprocess_calls.append(cmd)
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # First call: no plan
+                # Second call (after planning): has plan
+                issue_view_call_count["value"] += 1
+                if issue_view_call_count["value"] == 1:
+                    mock_result.stdout = json.dumps(
+                        {
+                            "title": "Test Issue",
+                            "body": "Just a description without plan markers",
+                        }
+                    )
+                else:
+                    mock_result.stdout = json.dumps(
+                        {
+                            "title": "Test Issue",
+                            "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                        }
+                    )
+            elif "issue" in cmd and "comment" in cmd:
+                # gh issue comment - should be called with explanatory message
+                pass
+            elif ("git" in cmd and "commit" in cmd) or ("git" in cmd and "push" in cmd):
+                # git commit or git push
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
+        with (
+            patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr),
+            patch.object(workflow, "_run_prompt") as mock_run_prompt,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
+        ):
+            workflow.execute(ctx, mock_config)
+
+        # Verify comment was posted
+        comment_calls = [c for c in subprocess_calls if "issue" in c and "comment" in c]
+        assert len(comment_calls) == 1
+        comment_cmd = comment_calls[0]
+        # The comment body should mention auto-triggering planning
+        comment_body_idx = comment_cmd.index("--body") + 1
+        assert "Implement" in comment_cmd[comment_body_idx]
+        assert "implementation plan" in comment_cmd[comment_body_idx].lower()
+
+        # Verify /kiln-create_plan_simple was called
+        plan_simple_calls = [
+            c for c in mock_run_prompt.call_args_list if "/kiln-create_plan_simple" in c[0][0]
+        ]
+        assert len(plan_simple_calls) == 1
+
+    def test_validates_checkboxes_after_plan_creation(self):
+        """Test that execute() validates plan has checkboxes before proceeding."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        from src.config import Config
+        from src.workflows.base import WorkflowContext
+
+        workflow = ImplementWorkflow()
+
+        mock_config = MagicMock(spec=Config)
+        mock_config.safety_allow_appended_tasks = 0
+
+        ctx = WorkflowContext(
+            repo="github.com/owner/test-repo",
+            issue_number=42,
+            issue_title="Test Issue",
+            workspace_path="/tmp/worktrees/test",
+        )
+
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # Plan exists but has NO checkboxes
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\nNo checkboxes here\n{PLAN_END_MARKER}",
+                    }
+                )
+            return mock_result
+
+        with (
+            patch.object(workflow, "_get_pr_for_issue", return_value=None),
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
+            pytest.raises(RuntimeError, match="contains no checkboxes"),
+        ):
+            workflow.execute(ctx, mock_config)
+
+
+@pytest.mark.unit
 class TestImplementWorkflow:
     """Tests for ImplementWorkflow class."""
 
@@ -757,12 +1672,21 @@ class TestImplementWorkflow:
         with patch("subprocess.run", return_value=mock_result) as mock_run:
             workflow._mark_pr_ready("github.com/owner/repo", 42)
 
-        mock_run.assert_called_once_with(
-            ["gh", "pr", "ready", "42", "--repo", "https://github.com/owner/repo"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args
+        assert call_args.args[0] == [
+            "gh",
+            "pr",
+            "ready",
+            "42",
+            "--repo",
+            "https://github.com/owner/repo",
+        ]
+        assert call_args.kwargs["capture_output"] is True
+        assert call_args.kwargs["text"] is True
+        assert call_args.kwargs["check"] is True
+        # For github.com, get_gh_env returns empty dict, so env should be os.environ
+        assert "env" in call_args.kwargs
 
     def test_mark_pr_ready_failure_logs_warning_no_raise(self):
         """Test that _mark_pr_ready logs warning on failure but doesn't raise."""
@@ -839,7 +1763,8 @@ class TestImplementWorkflow:
             assert call_kwargs.kwargs["model"] == "opus"
 
     def test_execute_creates_pr_when_none_exists(self, workflow_context):
-        """Test that execute() calls /prepare_implementation_github when no PR exists."""
+        """Test that execute() creates PR programmatically when no PR exists."""
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -853,13 +1778,13 @@ class TestImplementWorkflow:
         mock_config.prepare_pr_delay = 10
 
         # First call: no PR found
-        # Second call: PR found after prepare_implementation_github
+        # Second call: PR found after programmatic creation
         pr_responses = [
             None,  # Initial check - no PR
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
-            },  # After prepare
+            },  # After programmatic PR creation
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
@@ -872,21 +1797,50 @@ class TestImplementWorkflow:
             call_count["value"] += 1
             return result
 
+        # Mock subprocess calls for programmatic PR creation
+        mock_subprocess_results = []
+
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # extract_plan_from_issue
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd:
+                # git commit --allow-empty
+                pass
+            elif "git" in cmd and "push" in cmd:
+                # git push
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                # gh pr create
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                # collapse_plan_in_issue (may also be called as part of flow)
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            mock_subprocess_results.append(cmd)
+            return mock_result
+
         with (
             patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr_create),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
             patch("src.workflows.implement.time.sleep"),
         ):
             workflow.execute(workflow_context, mock_config)
 
-        # Verify prepare_implementation was called
-        prepare_calls = [
-            c for c in mock_run.call_args_list if "/kiln-prepare_implementation_github" in c[0][0]
+        # Verify programmatic PR creation was used (gh pr create was called)
+        pr_create_calls = [
+            c for c in mock_subprocess_results if "gh" in c and "pr" in c and "create" in c
         ]
-        assert len(prepare_calls) == 1
+        assert len(pr_create_calls) == 1
 
-    def test_execute_fails_after_three_pr_creation_attempts(self, workflow_context):
-        """Test that execute() raises RuntimeError after 3 failed PR creation attempts."""
+    def test_execute_fails_when_pr_lookup_fails_after_creation(self, workflow_context):
+        """Test that execute() raises RuntimeError when PR is created but lookup never finds it."""
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -897,17 +1851,33 @@ class TestImplementWorkflow:
         mock_config = MagicMock(spec=Config)
         mock_config.prepare_pr_delay = 10
 
-        # Always return None (no PR found)
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # extract_plan_from_issue
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd or "git" in cmd and "push" in cmd:
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                # gh pr create succeeds
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
+        # PR lookup always returns None (simulating GitHub search API lag)
         with (
             patch.object(workflow, "_get_pr_for_issue", return_value=None),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
             patch("src.workflows.implement.time.sleep") as mock_sleep,
-            pytest.raises(RuntimeError, match="Failed to create PR.*after 3 attempts"),
+            pytest.raises(RuntimeError, match="was created.*but could not be found"),
         ):
             workflow.execute(workflow_context, mock_config)
-
-        # Verify prepare_implementation was called three times
-        assert mock_run.call_count == 3
 
         # Verify sleep was called with exponential delays: 10, 30, 90
         assert mock_sleep.call_count == 3
@@ -1457,7 +2427,8 @@ Some other content here.
         mock_ready.assert_not_called()
 
     def test_execute_passes_base_flag_when_parent_branch_set(self, workflow_context):
-        """Test that execute() passes --base flag to /prepare_implementation_github when parent_branch is set."""
+        """Test that execute() passes --base flag to gh pr create when parent_branch is set."""
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -1479,13 +2450,13 @@ Some other content here.
         )
 
         # First call: no PR found
-        # Second call: PR found after prepare_implementation_github
+        # Second call: PR found after programmatic creation
         pr_responses = [
             None,  # Initial check - no PR
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
-            },  # After prepare
+            },  # After programmatic PR creation
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
@@ -1498,22 +2469,47 @@ Some other content here.
             call_count["value"] += 1
             return result
 
+        captured_pr_create_cmd = {"value": None}
+
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # extract_plan_from_issue
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd:
+                # git commit --allow-empty
+                pass
+            elif "git" in cmd and "push" in cmd:
+                # git push
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                # gh pr create - capture the command
+                captured_pr_create_cmd["value"] = cmd
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                # collapse_plan_in_issue
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
         with (
             patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr_create),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
         ):
             workflow.execute(ctx_with_parent, mock_config)
 
-        # Verify prepare_implementation was called with --base flag
-        prepare_calls = [
-            c for c in mock_run.call_args_list if "/kiln-prepare_implementation_github" in c[0][0]
-        ]
-        assert len(prepare_calls) == 1
-        prepare_prompt = prepare_calls[0][0][0]
-        assert "--base feature/parent-branch" in prepare_prompt
+        # Verify --base flag was passed to gh pr create
+        assert captured_pr_create_cmd["value"] is not None
+        assert "--base" in captured_pr_create_cmd["value"]
+        assert "feature/parent-branch" in captured_pr_create_cmd["value"]
 
     def test_execute_no_base_flag_when_parent_branch_not_set(self, workflow_context):
         """Test that execute() does NOT pass --base flag when parent_branch is not set."""
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -1528,13 +2524,13 @@ Some other content here.
         # workflow_context fixture does NOT have parent_branch set
 
         # First call: no PR found
-        # Second call: PR found after prepare_implementation_github
+        # Second call: PR found after programmatic creation
         pr_responses = [
             None,  # Initial check - no PR
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
-            },  # After prepare
+            },  # After programmatic PR creation
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
@@ -1547,19 +2543,42 @@ Some other content here.
             call_count["value"] += 1
             return result
 
+        captured_pr_create_cmd = {"value": None}
+
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                # extract_plan_from_issue
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd:
+                # git commit --allow-empty
+                pass
+            elif "git" in cmd and "push" in cmd:
+                # git push
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                # gh pr create - capture the command
+                captured_pr_create_cmd["value"] = cmd
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                # collapse_plan_in_issue
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
         with (
             patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr_create),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
         ):
             workflow.execute(workflow_context, mock_config)
 
-        # Verify prepare_implementation was called without --base flag
-        prepare_calls = [
-            c for c in mock_run.call_args_list if "/kiln-prepare_implementation_github" in c[0][0]
-        ]
-        assert len(prepare_calls) == 1
-        prepare_prompt = prepare_calls[0][0][0]
-        assert "--base" not in prepare_prompt
+        # Verify --base flag was NOT passed to gh pr create
+        assert captured_pr_create_cmd["value"] is not None
+        assert "--base" not in captured_pr_create_cmd["value"]
 
     def test_get_pr_for_issue_raises_network_error_on_tls_timeout(self):
         """Test that _get_pr_for_issue raises NetworkError on TLS timeout."""
@@ -1640,8 +2659,9 @@ Some other content here.
         """Test that execute() uses exponential delays based on config.prepare_pr_delay.
 
         The delay should be: prepare_pr_delay * 1, prepare_pr_delay * 3, prepare_pr_delay * 9
-        for attempts 1, 2, 3 respectively.
+        for lookup attempts 1, 2, 3 respectively.
         """
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -1652,17 +2672,31 @@ Some other content here.
         mock_config = MagicMock(spec=Config)
         mock_config.prepare_pr_delay = 5  # Custom value (not the default 10)
 
-        # Always return None (no PR found) to trigger all 3 attempts
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd or "git" in cmd and "push" in cmd:
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
+        # PR lookup always returns None to trigger all 3 lookup retries
         with (
             patch.object(workflow, "_get_pr_for_issue", return_value=None),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
             patch("src.workflows.implement.time.sleep") as mock_sleep,
-            pytest.raises(RuntimeError, match="Failed to create PR.*after 3 attempts"),
+            pytest.raises(RuntimeError, match="was created.*but could not be found"),
         ):
             workflow.execute(workflow_context, mock_config)
-
-        # Verify prepare_implementation was called three times
-        assert mock_run.call_count == 3
 
         # Verify sleep was called with exponential delays using custom config value
         # 5 * 1 = 5, 5 * 3 = 15, 5 * 9 = 45
@@ -1671,8 +2705,9 @@ Some other content here.
         mock_sleep.assert_any_call(15)  # 5 * 3
         mock_sleep.assert_any_call(45)  # 5 * 9
 
-    def test_execute_pr_found_on_first_attempt_minimal_delay(self, workflow_context):
-        """Test that when PR is created on first attempt, only one delay is used."""
+    def test_execute_pr_found_on_first_lookup_attempt_minimal_delay(self, workflow_context):
+        """Test that when PR is found on first lookup after creation, only one delay is used."""
+        import json
         from unittest.mock import MagicMock, patch
 
         from src.config import Config
@@ -1683,13 +2718,14 @@ Some other content here.
         mock_config.prepare_pr_delay = 10
         mock_config.safety_allow_appended_tasks = 0
 
-        # First call: no PR, second call (after prepare): PR found and complete
+        # First call: no PR (initial check), second call: found (after creation + delay)
+        # Third call: in implementation loop
         pr_responses = [
             None,  # Initial check - no PR
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
-            },  # After first prepare
+            },  # After creation + first delay
             {
                 "number": 42,
                 "body": "Closes #42\n\n## TASK 1: Test\n- [x] Done",
@@ -1702,20 +2738,31 @@ Some other content here.
             call_count["value"] += 1
             return result
 
+        def mock_subprocess_run(cmd, **kwargs):
+            mock_result = MagicMock()
+            if "issue" in cmd and "view" in cmd:
+                mock_result.stdout = json.dumps(
+                    {
+                        "title": "Test Issue",
+                        "body": f"{PLAN_START_MARKER}\n## TASK 1: Test\n- [ ] Task\n{PLAN_END_MARKER}",
+                    }
+                )
+            elif "git" in cmd and "commit" in cmd or "git" in cmd and "push" in cmd:
+                pass
+            elif "gh" in cmd and "pr" in cmd and "create" in cmd:
+                mock_result.stdout = "https://github.com/owner/test-repo/pull/42\n"
+            elif "issue" in cmd and "edit" in cmd:
+                mock_result.stdout = json.dumps({"body": "collapsed"})
+            return mock_result
+
         with (
             patch.object(workflow, "_get_pr_for_issue", side_effect=mock_get_pr),
-            patch.object(workflow, "_run_prompt") as mock_run,
+            patch("src.workflows.implement.subprocess.run", side_effect=mock_subprocess_run),
             patch("src.workflows.implement.time.sleep") as mock_sleep,
         ):
             workflow.execute(workflow_context, mock_config)
 
-        # Only one prepare call needed
-        prepare_calls = [
-            c for c in mock_run.call_args_list if "/kiln-prepare_implementation_github" in c[0][0]
-        ]
-        assert len(prepare_calls) == 1
-
-        # Only one delay (first attempt) - 10 * 1 = 10
+        # Only one delay (first lookup attempt) - 10 * 1 = 10
         mock_sleep.assert_called_once_with(10)
 
     def test_execute_retries_pr_lookup_on_network_error(self, workflow_context):

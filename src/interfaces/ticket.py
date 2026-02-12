@@ -65,6 +65,46 @@ class Comment:
 
 
 @dataclass
+class CheckRunResult:
+    """Represents a CI check run or commit status result.
+
+    This dataclass captures the state of a single CI check (from GitHub Actions
+    check runs or commit status checks from external CI systems like Jenkins).
+
+    Attributes:
+        name: Name of the check run or status context (e.g., "CI / test", "jenkins/build").
+        status: Current status of the check (queued, in_progress, completed).
+        conclusion: Final result when completed (success, failure, neutral, cancelled,
+            skipped, timed_out, action_required). None if not yet completed.
+        details_url: Optional URL to view more details about the check.
+        output: Optional output summary or failure message from the check.
+    """
+
+    name: str
+    status: str  # queued, in_progress, completed
+    conclusion: str | None = (
+        None  # success, failure, neutral, cancelled, skipped, timed_out, action_required
+    )
+    details_url: str | None = None
+    output: str | None = None
+
+    @property
+    def is_completed(self) -> bool:
+        """Check if this run has completed."""
+        return self.status == "completed"
+
+    @property
+    def is_successful(self) -> bool:
+        """Check if this run completed successfully."""
+        return self.is_completed and self.conclusion in ("success", "neutral", "skipped")
+
+    @property
+    def is_failed(self) -> bool:
+        """Check if this run completed with a failure."""
+        return self.is_completed and self.conclusion in ("failure", "timed_out", "action_required")
+
+
+@dataclass
 class LinkedPullRequest:
     """Abstract representation of a pull request linked to a ticket.
 
@@ -258,5 +298,80 @@ class TicketClient(Protocol):
         Returns:
             PR state string: "OPEN", "CLOSED", or "MERGED"
             None on error (fail-safe - don't block workflow)
+        """
+        ...
+
+    # Merge queue operations
+
+    def list_prs_by_label(self, repo: str, label: str, state: str = "open") -> list[dict[str, Any]]:
+        """List pull requests with a specific label.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            label: Label name to filter by
+            state: PR state filter ('open', 'closed', 'all')
+
+        Returns:
+            List of dicts with PR info: number, title, createdAt, headRefOid
+        """
+        ...
+
+    def merge_pr(self, repo: str, pr_number: int, merge_method: str = "squash") -> bool:
+        """Merge a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to merge
+            merge_method: Merge method ('merge', 'squash', 'rebase')
+
+        Returns:
+            True if merged successfully, False otherwise
+        """
+        ...
+
+    def comment_on_pr(self, repo: str, pr_number: int, body: str) -> bool:
+        """Add a comment to a pull request.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to comment on
+            body: Comment body text
+
+        Returns:
+            True if comment added successfully, False otherwise
+        """
+        ...
+
+    def approve_pr(self, repo: str, pr_number: int) -> bool:
+        """Approve a pull request.
+
+        Submits an approving review on behalf of the authenticated user.
+        Required when branch protection rules require code owner approval.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to approve
+
+        Returns:
+            True if approved successfully, False otherwise
+        """
+        ...
+
+    def get_pr_merge_state(self, repo: str, pr_number: int) -> dict[str, Any] | None:
+        """Get the merge state details of a pull request.
+
+        Returns detailed information about the PR's merge readiness including
+        whether it needs rebasing, has conflicts, or is blocked by requirements.
+
+        Args:
+            repo: Repository in 'hostname/owner/repo' format
+            pr_number: PR number to check
+
+        Returns:
+            Dict with keys: mergeStateStatus, mergeable, reviewDecision
+            - mergeStateStatus: BEHIND, BLOCKED, CLEAN, DIRTY, UNSTABLE, UNKNOWN
+            - mergeable: MERGEABLE, CONFLICTING, UNKNOWN
+            - reviewDecision: APPROVED, CHANGES_REQUESTED, REVIEW_REQUIRED, or empty
+            Returns None on error.
         """
         ...

@@ -43,6 +43,11 @@ class Labels:
     AUTO = "auto"  # Synonym for yolo
     YOLO_FAILED = "yolo_failed"
     RESET = "reset"
+    STOP = "stop"
+
+    # Auto-merge labels (for Dependabot PR queue)
+    AUTO_MERGING = "auto-merging"
+    AUTO_MERGE_QUEUE = "auto-merge-queue"
 
     # Labels that trigger auto-progression (yolo and its synonyms)
     YOLO_LABELS = frozenset({YOLO, AUTO})
@@ -107,6 +112,10 @@ REQUIRED_LABELS: dict[str, LabelConfig] = {
         "description": "Clear kiln content and move issue to Backlog",
         "color": "3B82F6",  # Blue
     },
+    Labels.STOP: {
+        "description": "Stop running implementation",
+        "color": "DC143C",  # Crimson red
+    },
     Labels.IMPLEMENTATION_FAILED: {
         "description": "Implementation workflow failed after retries",
         "color": "DC2626",  # Red
@@ -114,5 +123,13 @@ REQUIRED_LABELS: dict[str, LabelConfig] = {
     Labels.RESEARCH_FAILED: {
         "description": "Research workflow completed but no research block found",
         "color": "D93F0B",  # Red/orange for failure
+    },
+    Labels.AUTO_MERGING: {
+        "description": "Dependabot PR currently being merged",
+        "color": "0E8A16",  # Green
+    },
+    Labels.AUTO_MERGE_QUEUE: {
+        "description": "Dependabot PR waiting in merge queue",
+        "color": "1D76DB",  # Blue
     },
 }

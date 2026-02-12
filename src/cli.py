@@ -15,7 +15,8 @@ import argparse
 import re
 import shutil
 import sys
-from datetime import datetime
+import zipfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -456,6 +457,383 @@ def parse_issue_arg(issue_arg: str) -> tuple[str, int]:
     return repo, int(issue_num)
 
 
+def validate_kiln_directory() -> str:
+    """Validate current directory is a kiln root and return workspace dir name.
+
+    Checks for:
+    - .kiln/config file existence
+    - worktrees/ or workspaces/ directory
+
+    Returns:
+        "worktrees" or "workspaces" depending on which exists
+
+    Raises:
+        SetupError: If not in a valid kiln directory
+    """
+    from src.setup import SetupError
+
+    kiln_dir = get_kiln_dir()
+    config_path = kiln_dir / CONFIG_FILE
+
+    # Check for .kiln/config
+    if not config_path.exists():
+        raise SetupError(
+            "Not in a kiln directory.\n"
+            "Could not find .kiln/config file.\n"
+            "Please run this command from a kiln root directory."
+        )
+
+    # Check for worktrees/ or workspaces/ directory
+    cwd = Path.cwd()
+    if (cwd / "worktrees").is_dir():
+        return "worktrees"
+    elif (cwd / "workspaces").is_dir():
+        return "workspaces"
+    else:
+        raise SetupError(
+            "Not in a valid kiln directory.\n"
+            "Could not find worktrees/ or workspaces/ directory.\n"
+            "Please run this command from a kiln root directory."
+        )
+
+
+def parse_issue_url(url: str) -> tuple[str, str, str, int]:
+    """Parse full GitHub issue URL into components.
+
+    Supports formats:
+        - https://github.com/owner/repo/issues/123
+        - https://ghes.example.com/owner/repo/issues/123
+        - http://github.com/owner/repo/issues/123
+
+    Args:
+        url: Full issue URL
+
+    Returns:
+        Tuple of (hostname, owner, repo, issue_number)
+
+    Raises:
+        ValueError: If URL format is invalid
+    """
+    from urllib.parse import urlparse
+
+    # Parse the URL
+    parsed = urlparse(url)
+
+    # Validate scheme
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"Invalid issue URL: {url}\nExpected format: https://github.com/owner/repo/issues/123"
+        )
+
+    hostname = parsed.netloc
+    if not hostname:
+        raise ValueError(
+            f"Invalid issue URL: {url}\nExpected format: https://github.com/owner/repo/issues/123"
+        )
+
+    # Parse path: /owner/repo/issues/123
+    path_parts = [p for p in parsed.path.split("/") if p]
+    if len(path_parts) < 4:
+        raise ValueError(
+            f"Invalid issue URL: {url}\nExpected format: https://github.com/owner/repo/issues/123"
+        )
+
+    owner = path_parts[0]
+    repo = path_parts[1]
+
+    # Validate that path contains "issues"
+    if path_parts[2] != "issues":
+        raise ValueError(
+            f"Invalid issue URL: {url}\nExpected format: https://github.com/owner/repo/issues/123"
+        )
+
+    # Parse issue number
+    try:
+        issue_number = int(path_parts[3])
+    except ValueError as e:
+        raise ValueError(f"Invalid issue URL: {url}\nIssue number must be a valid integer") from e
+
+    return hostname, owner, repo, issue_number
+
+
+def find_claude_sessions(
+    workspace_dir: str,  # noqa: ARG001 - kept for future use
+    hostname: str,  # noqa: ARG001 - kept for future GHES support
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> Path | None:
+    """Find Claude session directory for a given issue.
+
+    Claude stores session files at ~/.claude/projects/<path-hash>/*.jsonl
+    where path-hash is derived from the working directory. This function locates
+    the project directory for a specific issue by calculating the expected
+    worktree path and searching for matching session files.
+
+    Args:
+        workspace_dir: "worktrees" or "workspaces" - the directory containing worktrees
+        hostname: GitHub hostname (e.g., "github.com")
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+
+    Returns:
+        Path to project directory containing .jsonl session files, or None if not found
+    """
+    # Calculate expected worktree name pattern
+    # Pattern: {owner}_{repo}-issue-{issue_number}
+    repo_id = f"{owner}_{repo}"
+    worktree_name = f"{repo_id}-issue-{issue_number}"
+
+    # Claude projects directory
+    claude_projects = Path.home() / ".claude" / "projects"
+    if not claude_projects.exists():
+        return None
+
+    # Claude uses the absolute path of the working directory to create a hash-based
+    # directory name. We need to search for a projects directory that corresponds
+    # to our worktree path.
+    #
+    # The path in Claude is stored as: ~/.claude/projects/<escaped-path>/
+    # where <escaped-path> is the absolute path with / replaced by other characters
+    # Session files are stored directly in this directory (no sessions/ subdirectory).
+    #
+    # Since we don't know the exact escaping mechanism, we search for directories
+    # that contain session files and whose path matches our worktree path pattern.
+
+    # Search all project directories for one that matches our worktree
+    for project_dir in claude_projects.iterdir():
+        if not project_dir.is_dir():
+            continue
+
+        # Check if this project directory name contains our worktree path pattern
+        # Claude's path encoding uses the full absolute path, so we can check
+        # if the project directory name contains the worktree name
+        project_name = project_dir.name
+
+        # The project name is an encoded form of the absolute path
+        # Check if the worktree name appears in the encoded path
+        if worktree_name in project_name:
+            # Verify there are actual session files directly in project_dir
+            session_files = list(project_dir.glob("*.jsonl"))
+            if session_files:
+                return project_dir
+
+    # Alternative: search for any session files that might be associated with this issue
+    # This handles edge cases where the encoding differs
+    # Look for session files in any project that has our owner_repo pattern
+    for project_dir in claude_projects.iterdir():
+        if not project_dir.is_dir():
+            continue
+
+        project_name = project_dir.name
+
+        # Check for the repo identifier pattern (owner_repo)
+        # and issue number in the project path
+        if repo_id in project_name and f"issue-{issue_number}" in project_name:
+            # Session files are stored directly in project_dir (no sessions/ subdirectory)
+            session_files = list(project_dir.glob("*.jsonl"))
+            if session_files:
+                return project_dir
+
+    return None
+
+
+def create_debug_zip(
+    sessions_path: Path | None,
+    debug_data: dict[str, str],
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> Path:
+    """Create debug zip file with session files and optional data.
+
+    Creates a timestamped zip file in .kiln/support/ containing:
+    - Claude session files (if sessions_path is provided)
+    - Additional debug data files (git status, database records, etc.)
+
+    Args:
+        sessions_path: Path to Claude sessions directory (may be None)
+        debug_data: Dict of filename -> content for additional files
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+
+    Returns:
+        Path to created zip file
+
+    """
+    # Create .kiln/support/ directory if it doesn't exist
+    kiln_dir = get_kiln_dir()
+    support_dir = kiln_dir / "support"
+    support_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamped filename (UTC for consistency)
+    timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    zip_filename = f"debug-{owner}-{repo}-{issue_number}-{timestamp}.zip"
+    zip_path = support_dir / zip_filename
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Add session files from Claude projects directory
+        if sessions_path is not None and sessions_path.exists():
+            for session_file in sessions_path.glob("*.jsonl"):
+                # Store with relative path: sessions/<filename>
+                arcname = f"sessions/{session_file.name}"
+                zf.write(session_file, arcname)
+
+        # Add optional debug data files
+        for filename, content in debug_data.items():
+            zf.writestr(filename, content)
+
+    return zip_path
+
+
+def collect_debug_data(
+    workspace_dir: str,
+    hostname: str,
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> dict[str, str]:
+    """Collect optional debug data (git status, database records).
+
+    Collects git status from the worktree (if it exists) and database records
+    for the issue. All operations fail silently - missing data is simply
+    omitted from the returned dict.
+
+    Args:
+        workspace_dir: "worktrees" or "workspaces" - the directory containing worktrees
+        hostname: GitHub hostname (e.g., "github.com")
+        owner: Repository owner
+        repo: Repository name
+        issue_number: Issue number
+
+    Returns:
+        Dict with keys like "git_status.txt", "database_records.json"
+        Values are file contents. Missing data is omitted from dict.
+    """
+    import json
+    import subprocess
+
+    from src.database import Database
+
+    data: dict[str, str] = {}
+
+    # Calculate worktree path
+    repo_id = f"{owner}_{repo}"
+    worktree_name = f"{repo_id}-issue-{issue_number}"
+    worktree_path = Path.cwd() / workspace_dir / worktree_name
+
+    # Try to get git status if worktree exists
+    if worktree_path.exists() and worktree_path.is_dir():
+        try:
+            result = subprocess.run(
+                ["git", "status"],
+                cwd=str(worktree_path),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode == 0:
+                data["git_status.txt"] = result.stdout
+            else:
+                # Include stderr if git status failed but directory exists
+                data["git_status.txt"] = f"git status failed:\n{result.stderr}"
+        except (subprocess.TimeoutExpired, OSError):
+            # Silently skip git status on errors
+            pass
+
+    # Try to get database records
+    kiln_dir = get_kiln_dir()
+    db_path = kiln_dir / "kiln.db"
+
+    if db_path.exists():
+        try:
+            db = Database(str(db_path))
+
+            # Build repo string in expected format: hostname/owner/repo
+            repo_full = f"{hostname}/{owner}/{repo}"
+
+            db_records: dict[str, object] = {}
+
+            # Get issue state
+            issue_state = db.get_issue_state(repo_full, issue_number)
+            if issue_state:
+                db_records["issue_state"] = {
+                    "repo": issue_state.repo,
+                    "issue_number": issue_state.issue_number,
+                    "status": issue_state.status,
+                    "last_updated": issue_state.last_updated.isoformat()
+                    if issue_state.last_updated
+                    else None,
+                    "branch_name": issue_state.branch_name,
+                    "project_url": issue_state.project_url,
+                }
+
+            # Get run history
+            run_history = db.get_run_history(repo_full, issue_number)
+            if run_history:
+                db_records["run_history"] = [
+                    {
+                        "id": run.id,
+                        "workflow": run.workflow,
+                        "started_at": run.started_at.isoformat(),
+                        "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                        "outcome": run.outcome,
+                        "log_path": run.log_path,
+                        "session_id": run.session_id,
+                    }
+                    for run in run_history
+                ]
+
+            if db_records:
+                data["database_records.json"] = json.dumps(db_records, indent=2)
+        except Exception:
+            # Silently skip database errors
+            pass
+
+    return data
+
+
+def cmd_debug(args: argparse.Namespace) -> None:
+    """Handle the 'debug' subcommand.
+
+    Collects Claude session files, git status, and database records for a given
+    GitHub issue, packaging them into a zip file for support/debugging purposes.
+    """
+    from src.setup import SetupError
+
+    try:
+        # 1. Validate kiln directory
+        workspace_dir = validate_kiln_directory()
+
+        # 2. Parse issue URL
+        hostname, owner, repo, issue_number = parse_issue_url(args.issue_url)
+
+        # 3. Find Claude sessions
+        sessions_path = find_claude_sessions(workspace_dir, hostname, owner, repo, issue_number)
+
+        # 4. Collect optional debug data
+        debug_data = collect_debug_data(workspace_dir, hostname, owner, repo, issue_number)
+
+        # 5. Create zip file
+        if sessions_path is None and not debug_data:
+            print(f"No debug data found for {owner}/{repo}#{issue_number}", file=sys.stderr)
+            sys.exit(1)
+
+        zip_path = create_debug_zip(sessions_path, debug_data, owner, repo, issue_number)
+
+        # 6. Print result
+        print(f"Debug archive created: {zip_path}")
+
+    except SetupError as e:
+        print(f"\n{e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def format_duration(start: datetime, end: datetime | None) -> str:
     """Format duration between two timestamps."""
     if end is None:
@@ -787,11 +1165,23 @@ def main() -> None:
         help="Show Claude session info for a specific run ID",
     )
 
+    # 'debug' subcommand
+    debug_parser = subparsers.add_parser(
+        "debug",
+        help="Create debug archive for a GitHub issue",
+    )
+    debug_parser.add_argument(
+        "issue_url",
+        help="Full GitHub issue URL (e.g., https://github.com/owner/repo/issues/123)",
+    )
+
     args = parser.parse_args()
 
     # Handle commands
     if args.command == "logs":
         cmd_logs(args)
+    elif args.command == "debug":
+        cmd_debug(args)
     elif args.command == "run":
         cmd_run(args)
     else:

@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 def validate_session_exists(session_id: str) -> bool:
     """Check if a Claude session file exists in any project directory.
 
-    Claude stores session files at ~/.claude/projects/<path-hash>/sessions/<id>.jsonl
+    Claude stores session files at ~/.claude/projects/<path-hash>/<id>.jsonl
     where path-hash is derived from the working directory. When a repository is
     relocated, the path-hash changes and the session becomes inaccessible.
 
@@ -43,7 +43,7 @@ def validate_session_exists(session_id: str) -> bool:
         logger.debug(f"Claude projects directory not found: {claude_projects}")
         return False
 
-    session_pattern = f"**/sessions/{session_id}.jsonl"
+    session_pattern = f"**/{session_id}.jsonl"
     matches = list(claude_projects.glob(session_pattern))
 
     if matches:

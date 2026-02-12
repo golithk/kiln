@@ -556,11 +556,10 @@ class TestValidateSessionExists:
         # Create Claude projects directory structure without the session file
         claude_projects = tmp_path / ".claude" / "projects"
         project_dir = claude_projects / "test-project-hash"
-        sessions_dir = project_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
+        project_dir.mkdir(parents=True)
 
         # Create a different session file
-        (sessions_dir / "other-session.jsonl").touch()
+        (project_dir / "other-session.jsonl").touch()
 
         with patch.object(Path, "home", return_value=tmp_path):
             result = validate_session_exists("missing-session-id")
@@ -571,11 +570,10 @@ class TestValidateSessionExists:
         # Create Claude projects directory structure with the session file
         claude_projects = tmp_path / ".claude" / "projects"
         project_dir = claude_projects / "test-project-hash"
-        sessions_dir = project_dir / "sessions"
-        sessions_dir.mkdir(parents=True)
+        project_dir.mkdir(parents=True)
 
         session_id = "abc123-test-session"
-        (sessions_dir / f"{session_id}.jsonl").touch()
+        (project_dir / f"{session_id}.jsonl").touch()
 
         with patch.object(Path, "home", return_value=tmp_path):
             result = validate_session_exists(session_id)
@@ -587,16 +585,16 @@ class TestValidateSessionExists:
         claude_projects = tmp_path / ".claude" / "projects"
 
         # Create first project without the session
-        project1_sessions = claude_projects / "project-1-hash" / "sessions"
-        project1_sessions.mkdir(parents=True)
-        (project1_sessions / "other-session.jsonl").touch()
+        project1_dir = claude_projects / "project-1-hash"
+        project1_dir.mkdir(parents=True)
+        (project1_dir / "other-session.jsonl").touch()
 
         # Create second project with the session
-        project2_sessions = claude_projects / "project-2-hash" / "sessions"
-        project2_sessions.mkdir(parents=True)
+        project2_dir = claude_projects / "project-2-hash"
+        project2_dir.mkdir(parents=True)
 
         session_id = "target-session-id"
-        (project2_sessions / f"{session_id}.jsonl").touch()
+        (project2_dir / f"{session_id}.jsonl").touch()
 
         with patch.object(Path, "home", return_value=tmp_path):
             result = validate_session_exists(session_id)

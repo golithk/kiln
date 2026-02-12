@@ -39,29 +39,49 @@ jobs:
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.tag || github.event.release.tag_name }}
           RELEASE_URL: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.url || github.event.release.html_url }}
           RELEASE_BODY: ${{ github.event_name == 'workflow_dispatch' && steps.release_info.outputs.body || github.event.release.body }}
+          GITHUB_REPO: ${{ github.repository }}
         run: |
+          REPO_URL="https://github.com/${GITHUB_REPO}"
+
           # Convert markdown to Slack mrkdwn format
           convert_to_mrkdwn() {
             local text="$1"
+            # Strip carriage returns (GitHub API returns \r\n line endings)
+            text=$(printf '%s' "$text" | tr -d '\r')
+            # Strip "What's Changed" section and everything after it
+            text=$(echo "$text" | sed '/^## What'\''s Changed/,$d')
+            # Remove trailing blank lines
+            text=$(echo "$text" | sed -e :a -e '/^[[:space:]]*$/{ $d; N; ba; }')
             # Convert [text](url) to <url|text>
             text=$(echo "$text" | sed -E 's/\[([^]]+)\]\(([^)]+)\)/<\2|\1>/g')
+            # Convert ## headers to bold
+            text=$(echo "$text" | sed -E 's/^## (.+)/*\1*/')
             # Convert **bold** to *bold*
             text=$(echo "$text" | sed -E 's/\*\*([^*]+)\*\*/\*\1\*/g')
-            # Convert *italic* to _italic_ (but not if it's already bold marker)
-            text=$(echo "$text" | sed -E 's/([^*])\*([^*]+)\*([^*])/\1_\2_\3/g')
+            # Link @usernames to GitHub profiles (skip if already inside a Slack link)
+            text=$(echo "$text" | sed -E 's/(^|[^|<])@([a-zA-Z0-9_-]+)/\1<https:\/\/github.com\/\2|@\2>/g')
+            # Link #issue references to GitHub issues (skip if inside URLs or Slack links)
+            text=$(echo "$text" | sed -E 's/(^|[^|<\/])#([0-9]+)/\1<'"${REPO_URL//\//\\/}"'\/issues\/\2|#\2>/g')
+            # Convert "**Full Changelog**: URL" to a proper Slack link
+            text=$(echo "$text" | sed -E 's/\*Full Changelog\*: (https?:\/\/[^ ]+)/<\1|Full Changelog>/')
             echo "$text"
           }
 
-          # Prepare release notes
+          # Prepare release notes (use printf for real newlines so jq encodes them correctly)
           if [ -n "$RELEASE_BODY" ]; then
             FORMATTED_BODY=$(convert_to_mrkdwn "$RELEASE_BODY")
-            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n${FORMATTED_BODY}\n\n<${RELEASE_URL}|View Release on GitHub>"
+            MESSAGE=$(printf '%s\n\n%s\n\n%s' \
+              "🚀 *Kiln ${RELEASE_TAG}* has been released!" \
+              "$FORMATTED_BODY" \
+              "<${RELEASE_URL}|View Release on GitHub>")
           else
-            MESSAGE="🚀 *Kiln ${RELEASE_TAG}* has been released!\n\n<${RELEASE_URL}|View Release on GitHub>"
+            MESSAGE=$(printf '%s\n\n%s' \
+              "🚀 *Kiln ${RELEASE_TAG}* has been released!" \
+              "<${RELEASE_URL}|View Release on GitHub>")
           fi
 
           # Escape JSON special characters
-          MESSAGE=$(echo "$MESSAGE" | jq -Rs .)
+          MESSAGE=$(printf '%s' "$MESSAGE" | jq -Rs .)
 
           # Loop through webhook secrets and send to each
           webhook_sent=0

@@ -127,6 +127,25 @@ class MCPConfigManager:
         logger.info(f"Loaded MCP config with {len(mcp_servers)} server(s)")
         return self._cached_config
 
+    def get_substituted_mcp_servers(self) -> dict[str, Any]:
+        """Load config and return mcp_servers with tokens substituted.
+
+        This method provides a clean API for getting server configurations
+        with token placeholders (e.g., ${AZURE_BEARER_TOKEN}) replaced with
+        actual values. Used by daemon validation and health checks.
+
+        Returns:
+            Dictionary of server configs with tokens substituted.
+            Empty dict if no config exists.
+        """
+        config = self.load_config()
+        if config is None:
+            return {}
+
+        substituted_config = self._substitute_tokens(config.raw_config)
+        mcp_servers = substituted_config.get("mcpServers", {})
+        return cast(dict[str, Any], mcp_servers)
+
     def has_config(self) -> bool:
         """Check if MCP config exists and has server definitions.
 
